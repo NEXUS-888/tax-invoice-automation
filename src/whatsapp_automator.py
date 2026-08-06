@@ -59,8 +59,9 @@ class WhatsAppAutomator:
                 except Exception:
                     pass
 
-    def launch_session(self, headless=True):
+    def launch_session(self, headless=False):
         from playwright.sync_api import sync_playwright
+
 
         if self.browser_context:
             self.log("WhatsApp session is already active.")
