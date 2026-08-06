@@ -302,22 +302,31 @@ class WhatsAppAutomator:
             return False
 
     def _send_text_message(self, message):
-        """Sends a plain text message using the chat input field."""
+        """Sends a multi-line text message as ONE single chat bubble using Shift+Enter between lines."""
         input_selectors = [
             "div[data-testid='conversation-compose-box-input']",
             "footer div[contenteditable='true']",
             "div[contenteditable='true'][data-tab='10']",
+            "div[contenteditable='true'][role='textbox']",
+            "p.selectable-text",
         ]
         try:
             for sel in input_selectors:
                 el = self.page.query_selector(sel)
                 if el and el.is_visible():
                     el.click()
-                    self.page.keyboard.type(message)
+                    time.sleep(0.2)
+                    lines = message.split("\n")
+                    for i, line in enumerate(lines):
+                        if line:
+                            self.page.keyboard.type(line)
+                        if i < len(lines) - 1:
+                            self.page.keyboard.press("Shift+Enter")
+                    time.sleep(0.3)
                     self.page.keyboard.press("Enter")
                     return True
-        except Exception:
-            pass
+        except Exception as e:
+            self.log(f"  Text send error: {e}")
         return False
 
     def _type_caption_in_preview(self, caption_text):
@@ -532,12 +541,12 @@ class WhatsAppAutomator:
         return True
 
     def _open_chat_for_number(self, clean_phone):
-        """Opens chat for phone number using client-side SPA navigation without destroying WebSocket session."""
+        """Opens chat for phone number using client-side SPA navigation without destroying WebSocket session or popping up window."""
         chat_url = f"https://web.whatsapp.com/send?phone={clean_phone}"
         try:
-            current_url = self.page.url
-            if "web.whatsapp.com" in current_url and self.is_logged_in():
-                # Client-side SPA route change to avoid destroying WebSocket connections
+            current_url = self.page.url if self.page else ""
+            if "web.whatsapp.com" in current_url:
+                # Client-side SPA route change to switch chats without reloading the page or taking window focus
                 self.page.evaluate("(url) => { window.location.href = url; }", chat_url)
                 time.sleep(1.0)
                 return True
@@ -546,6 +555,7 @@ class WhatsAppAutomator:
 
         self.page.goto(chat_url, wait_until="domcontentloaded")
         return True
+
 
     # ── Core send logic ──────────────────────────────────────────
 
