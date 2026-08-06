@@ -1,0 +1,26 @@
+# Byte-compiled / Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local User Session & Private Data
+data/wa_session/
+data/contacts.json
+crash_log.txt
+
+# Output files & spreadsheets
+output/
+output_test/
+scratch/
+*.xlsx
+*.xlsm
+
+# Debug screenshots & log files
+*.png
+!data/signature*.png
+wa_debug_*.png
+
+# Environment files
+.env
+.venv/
+env/
