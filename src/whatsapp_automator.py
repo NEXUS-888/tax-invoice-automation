@@ -59,7 +59,7 @@ class WhatsAppAutomator:
                 except Exception:
                     pass
 
-    def launch_session(self, headless=True):
+    def launch_session(self, headless=False):
         from playwright.sync_api import sync_playwright
 
         if self.browser_context:
@@ -67,10 +67,9 @@ class WhatsAppAutomator:
             return True
 
         self._clean_session_lockfiles()
-        self.is_headless = headless
 
         try:
-            self.log(f"Initializing WhatsApp Web session ({'Background mode' if headless else 'Interactive window'})...")
+            self.log("Initializing WhatsApp Web session (Interactive window)...")
             self.playwright = sync_playwright().start()
 
             self.browser_context = self.playwright.chromium.launch_persistent_context(
@@ -154,7 +153,7 @@ class WhatsAppAutomator:
         return False
 
     def wait_for_login(self, timeout=60):
-        """Waits for user to scan QR code and log into WhatsApp Web. Switches to visible mode if QR code scan is required."""
+        """Waits for user to scan QR code and log into WhatsApp Web."""
         self.log("Checking WhatsApp Web login status...")
         start = time.time()
         while time.time() - start < timeout:
@@ -163,17 +162,11 @@ class WhatsAppAutomator:
                 return True
 
             if self.is_qr_screen():
-                if getattr(self, 'is_headless', False):
-                    self.log("📱 QR Code scan required! Opening visible browser window for scanning...")
-                    self.close()
-                    self.launch_session(headless=False)
-                    time.sleep(2)
-                    continue
-                else:
-                    self.log("📱 QR Code detected! Please scan the QR code in the WhatsApp window using your phone...")
+                self.log("📱 QR Code detected! Please scan the QR code in the WhatsApp window using your phone...")
 
             time.sleep(1.5)
         return False
+
 
 
 
