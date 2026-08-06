@@ -59,7 +59,7 @@ class WhatsAppAutomator:
                 except Exception:
                     pass
 
-    def launch_session(self, headless=False):
+    def launch_session(self, headless=True):
         from playwright.sync_api import sync_playwright
 
         if self.browser_context:
@@ -69,7 +69,7 @@ class WhatsAppAutomator:
         self._clean_session_lockfiles()
 
         try:
-            self.log("Initializing WhatsApp Web session...")
+            self.log(f"Initializing WhatsApp Web session ({'Background mode' if headless else 'Interactive window'})...")
             self.playwright = sync_playwright().start()
 
             self.browser_context = self.playwright.chromium.launch_persistent_context(
@@ -299,6 +299,25 @@ class WhatsAppAutomator:
             return True
         except Exception:
             return False
+
+    def _send_text_message(self, message):
+        """Sends a plain text message using the chat input field."""
+        input_selectors = [
+            "div[data-testid='conversation-compose-box-input']",
+            "footer div[contenteditable='true']",
+            "div[contenteditable='true'][data-tab='10']",
+        ]
+        try:
+            for sel in input_selectors:
+                el = self.page.query_selector(sel)
+                if el and el.is_visible():
+                    el.click()
+                    self.page.keyboard.type(message)
+                    self.page.keyboard.press("Enter")
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _type_caption_in_preview(self, caption_text):
         """Types caption directly into WhatsApp Web's document preview caption box if present."""
@@ -530,9 +549,14 @@ class WhatsAppAutomator:
     # ── Core send logic ──────────────────────────────────────────
 
     def send_invoice_to_single_number(self, clean_phone, agency_name, invoice_no, month_desc, pdf_path):
-        """Opens chat → attaches PDF with caption → sends PDF invoice atomically."""
+        """Opens chat → sends text message → attaches & sends PDF invoice."""
         abs_pdf = os.path.abspath(pdf_path)
-        caption = f"Invoice No: {invoice_no} - {month_desc} | ANANYA ENTERPRISES"
+
+        text_message = (
+            f"Dear {agency_name},\n\n"
+            f"Please find attached your invoice (Invoice No: {invoice_no}) for {month_desc}.\n\n"
+            f"Thank you,\nANANYA ENTERPRISES"
+        )
 
         try:
             self.log(f"Sending invoice to {agency_name} ({clean_phone})...")
@@ -549,21 +573,26 @@ class WhatsAppAutomator:
             time.sleep(1.0)
             self._dismiss_failed_popup()
 
-            # 1. Attach PDF Document directly
+            # 1. Send text invoice summary message first
+            self.log(f"  Sending invoice text message to {agency_name}...")
+            if not self._send_text_message(text_message):
+                self.log(f"  ⚠️ Could not send text message, proceeding to PDF attachment...")
+
+            time.sleep(1.5)
+
+            # 2. Attach PDF Document
+            self.log(f"  Attaching PDF document {os.path.basename(abs_pdf)}...")
             if not self._attach_pdf_document(abs_pdf):
                 self.log(f"  ❌ Could not attach PDF document: {os.path.basename(abs_pdf)}")
                 return False, "Could not attach PDF document"
 
-            # 2. Wait for Document Preview modal
+            # 3. Wait for Document Preview modal
             if not self._wait_for_document_preview(abs_pdf, timeout=15):
                 self.log(f"  ❌ PDF preview did not appear: {os.path.basename(abs_pdf)}")
                 return False, f"PDF preview did not appear for {os.path.basename(abs_pdf)}"
 
-            # 3. Type caption into Document Preview if available
-            self._type_caption_in_preview(caption)
-
             # 4. Click Send in Document Preview modal natively
-            self.log(f"  Clicking Send in Document Preview for {os.path.basename(abs_pdf)}...")
+            self.log(f"  Clicking Send for PDF document {os.path.basename(abs_pdf)}...")
             self._click_send()
             time.sleep(1.0)
 
@@ -582,7 +611,7 @@ class WhatsAppAutomator:
             if self._dismiss_failed_popup():
                 return False, "Message failed to send"
 
-            self.log(f"  ✅ Invoice successfully sent to {agency_name} ({clean_phone})")
+            self.log(f"  ✅ Invoice text message & PDF successfully sent to {agency_name} ({clean_phone})")
             return True, "Sent"
 
         except Exception as e:

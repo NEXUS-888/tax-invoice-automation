@@ -189,11 +189,12 @@ class WhatsAppWorker(QObject):
         # Step 1: Launch Playwright session
         try:
             self.automator = WhatsAppAutomator(self.session_dir, log_callback=self.log_message.emit)
-            ok = self.automator.launch_session(headless=False)
-            self.connected.emit(ok, "WhatsApp Web session started." if ok else "Failed to start WhatsApp Web.")
+            ok = self.automator.launch_session(headless=True)
+            self.connected.emit(ok, "WhatsApp Web session started (Background Mode)." if ok else "Failed to start WhatsApp Web.")
         except Exception as e:
             self.connected.emit(False, f"Failed: {e}")
             return
+
 
         # Step 2: Process queued tasks forever
         while True:
