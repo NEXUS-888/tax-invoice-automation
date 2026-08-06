@@ -186,14 +186,18 @@ class WhatsAppWorker(QObject):
         """Runs on the dedicated thread. Processes all tasks sequentially."""
         import queue
 
-        # Step 1: Launch Playwright session (Interactive visible browser window)
+        # Step 1: Launch Playwright session (Background mode by default)
         try:
             self.automator = WhatsAppAutomator(self.session_dir, log_callback=self.log_message.emit)
-            ok = self.automator.launch_session(headless=False)
+            ok = self.automator.launch_session(headless=True)
+            if ok:
+                # Check login status immediately; if QR code scan is needed, automator auto-switches to visible browser!
+                self.automator.wait_for_login(timeout=10)
             self.connected.emit(ok, "WhatsApp Web session started." if ok else "Failed to start WhatsApp Web.")
         except Exception as e:
             self.connected.emit(False, f"Failed: {e}")
             return
+
 
 
 
