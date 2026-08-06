@@ -135,16 +135,23 @@ class WhatsAppAutomator:
             return False
 
     def is_qr_screen(self):
-        """Returns True if WhatsApp Web is showing QR code login screen."""
+        """Returns True if WhatsApp Web is showing QR code login screen or initial login prompt."""
         if not self.page:
             return False
         try:
             qr = self.page.query_selector(
-                "canvas, div[data-testid='link-device-qr-code'], div[data-ref]"
+                "canvas, div[data-testid='link-device-qr-code'], div[data-ref], "
+                "div._akau, div._akav, div[data-testid='qrcode']"
             )
-            return bool(qr)
+            if qr and qr.is_visible():
+                return True
+
+            body_text = self.page.inner_text("body").lower() if self.page else ""
+            if "scan" in body_text or "link with phone number" in body_text or "to use whatsapp on your computer" in body_text:
+                return True
         except Exception:
-            return False
+            pass
+        return False
 
     def wait_for_login(self, timeout=60):
         """Waits for user to scan QR code and log into WhatsApp Web. Switches to visible mode if QR code scan is required."""
@@ -157,7 +164,7 @@ class WhatsAppAutomator:
 
             if self.is_qr_screen():
                 if getattr(self, 'is_headless', False):
-                    self.log("📱 QR Code scan required! Relaunching visible browser window for scanning...")
+                    self.log("📱 QR Code scan required! Opening visible browser window for scanning...")
                     self.close()
                     self.launch_session(headless=False)
                     time.sleep(2)
@@ -165,8 +172,9 @@ class WhatsAppAutomator:
                 else:
                     self.log("📱 QR Code detected! Please scan the QR code in the WhatsApp window using your phone...")
 
-            time.sleep(2)
+            time.sleep(1.5)
         return False
+
 
 
     def minimize_browser(self):

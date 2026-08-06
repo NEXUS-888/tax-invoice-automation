@@ -190,10 +190,14 @@ class WhatsAppWorker(QObject):
         try:
             self.automator = WhatsAppAutomator(self.session_dir, log_callback=self.log_message.emit)
             ok = self.automator.launch_session(headless=True)
-            self.connected.emit(ok, "WhatsApp Web session started (Background Mode)." if ok else "Failed to start WhatsApp Web.")
+            if ok:
+                # Check login status immediately; if QR code scan is needed, automator auto-switches to visible browser!
+                self.automator.wait_for_login(timeout=10)
+            self.connected.emit(ok, "WhatsApp Web session started." if ok else "Failed to start WhatsApp Web.")
         except Exception as e:
             self.connected.emit(False, f"Failed: {e}")
             return
+
 
 
 
