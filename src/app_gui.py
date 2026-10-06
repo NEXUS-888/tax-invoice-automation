@@ -2052,9 +2052,9 @@ class InvoiceAutomationApp(QMainWindow):
         QMessageBox.information(
             self, "WhatsApp Share Ready",
             f"{msg}\n\n"
-            "📋 The PDF invoice has been copied to your clipboard!\n"
-            "👉 In WhatsApp, click the chat message box and press Ctrl + V to attach the PDF.\n\n"
-            "💡 Tip: If you want the PDF attached and sent automatically without pressing Ctrl+V, use the '📱 Auto-Send' button!"
+            "📂 The PDF invoice has been highlighted in File Explorer!\n"
+            "👉 To attach manually: Drag & drop the highlighted PDF file directly into your WhatsApp chat window (or click Attach + -> Document).\n\n"
+            "⚡ 100% Automated Option: Use the '📱 Auto-Send' button next to the agency — it automatically attaches and sends the PDF into the chat without any manual steps!"
         )
 
     def highlight_pdf_file(self, pdf_path):
