@@ -379,33 +379,56 @@ class WhatsAppAutomator:
             self.log(f"  Text send error: {e}")
         return False
 
-    def _type_caption_in_preview(self, caption_text):
-        """Types caption directly into WhatsApp Web's document preview caption box if present."""
-        caption_selectors = [
-            "div[contenteditable='true'][data-testid^='media-caption-input']",
-            "div[role='dialog'] div[contenteditable='true']",
-            "div[contenteditable='true'][data-testid='media-caption-input']",
-            "div[contenteditable='true'][aria-placeholder*='caption' i]",
-            "div[contenteditable='true'][aria-label*='caption' i]",
-        ]
-        for sel in caption_selectors:
-            try:
-                for el in self.page.query_selector_all(sel):
-                    if el and el.is_visible():
-                        el.click()
-                        time.sleep(0.2)
-                        # A bare "\n" is an Enter keypress, which would send the preview early
-                        lines = caption_text.split("\n")
-                        for i, line in enumerate(lines):
-                            if line:
-                                self.page.keyboard.type(line, delay=1)
-                            if i < len(lines) - 1:
-                                self.page.keyboard.press("Shift+Enter")
-                        time.sleep(0.3)
-                        return True
-            except Exception:
-                continue
-        return False
+    CAPTION_SELECTORS = [
+        "div[contenteditable='true'][data-testid^='media-caption-input']",
+        "div[role='dialog'] div[contenteditable='true']",
+        "div[contenteditable='true'][data-testid='media-caption-input']",
+        "div[contenteditable='true'][aria-placeholder*='caption' i]",
+        "div[contenteditable='true'][aria-label*='caption' i]",
+    ]
+
+    def _find_caption_box(self, timeout):
+        """The preview's caption box; WhatsApp mounts it a moment after the preview's Send button."""
+        deadline = time.time() + timeout
+        while True:
+            for sel in self.CAPTION_SELECTORS:
+                try:
+                    for el in self.page.query_selector_all(sel):
+                        if el and el.is_visible():
+                            return el
+                except Exception:
+                    continue
+            if time.time() >= deadline:
+                return None
+            time.sleep(0.3)
+
+    def _type_caption_in_preview(self, caption_text, timeout=8):
+        """Fills the document preview's caption box; True only if the whole caption is there exactly once."""
+        el = self._find_caption_box(timeout)
+        if not el:
+            return False
+        lines = caption_text.split("\n")
+        first_line = next((l.strip() for l in lines if l.strip()), "")
+        last_line = next((l.strip() for l in reversed(lines) if l.strip()), "")
+        try:
+            # focus() instead of click(): an overlay still fading out can swallow a click
+            el.focus()
+            time.sleep(0.2)
+            if el.inner_text().strip():  # never append a second copy to a half-typed caption
+                self.page.keyboard.press("Control+A")
+                self.page.keyboard.press("Delete")
+            for i, line in enumerate(lines):
+                if line:
+                    # insert_text adds the line as text, so ":" cannot open emoji suggestions
+                    self.page.keyboard.insert_text(line)
+                if i < len(lines) - 1:
+                    # A bare "\n" is an Enter keypress, which would send the preview early
+                    self.page.keyboard.press("Shift+Enter")
+            time.sleep(0.3)
+            text = el.inner_text()
+            return last_line in text and text.count(first_line) == 1
+        except Exception:
+            return False
 
     def _open_attach_menu(self):
         """Opens the WhatsApp Web attachment popup menu."""

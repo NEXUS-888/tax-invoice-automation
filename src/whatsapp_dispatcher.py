@@ -284,8 +284,9 @@ class WhatsAppDispatcher:
 
     def attach_in_background(self, clean_phone, message, abs_pdf, on_complete=None):
         """
-        Opens the chat inside WhatsApp Desktop and attaches the PDF with the message as caption,
-        on a daemon thread (see whatsapp_desktop_bridge). On failure the PDF is copied and
+        Opens the chat inside WhatsApp Desktop (clean_phone None: the user picks it in WhatsApp's
+        contact list) and attaches the PDF with the message as caption, on a daemon thread
+        (see whatsapp_desktop_bridge). On failure the PDF is copied and
         highlighted in Explorer instead. on_complete(attached, message) fires from the thread.
         """
         def worker():
@@ -346,11 +347,14 @@ class WhatsAppDispatcher:
         target_mode = (target or self.mode or "app").lower()
         target_desc = f"{agency_name} ({clean_phone})" if clean_phone else agency_name
 
-        if target_mode in ("app", "desktop") and has_pdf and clean_phone:
+        if target_mode in ("app", "desktop") and has_pdf:
             # No whatsapp:// link here: in the 2025+ app it opens a "Send to" picker and the
             # text ends up sent separately from the PDF.
-            self.attach_in_background(clean_phone, message, abs_pdf, on_complete=on_complete)
-            return True, f"Opening {target_desc} in WhatsApp Desktop and attaching the PDF...", True
+            self.attach_in_background(clean_phone or None, message, abs_pdf, on_complete=on_complete)
+            if clean_phone:
+                return True, f"Opening {target_desc} in WhatsApp Desktop and attaching the PDF...", True
+            return True, ("WhatsApp Desktop is opening — pick the contact there and the PDF and "
+                          "message will be added automatically."), True
 
         if target_mode in ("app", "desktop"):
             if has_pdf:

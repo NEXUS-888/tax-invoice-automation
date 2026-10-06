@@ -129,11 +129,44 @@ class WhatsAppDesktopBridge:
         except Exception:
             pass
 
-    def attach_invoice(self, phone, caption, pdf_path, auto_send=False):
+    OPEN_CHAT_TITLE = r"() => { const h = document.querySelector('#main header'); return h ? h.innerText.split('\n')[0] : null }"
+
+    def _open_chat_title(self, page):
+        try:
+            return page.evaluate(self.OPEN_CHAT_TITLE)
+        except Exception:
+            return None
+
+    def _wait_for_user_to_pick_chat(self, page, timeout):
         """
-        Opens the chat for `phone` inside WhatsApp Desktop, attaches the PDF through WhatsApp's own
-        file input and fills the caption. Leaves the preview open for the user to press Send.
-        Blocking — run on a background thread. Returns (ok, message).
+        Closes the open chat, shows WhatsApp's "New chat" contact list and waits until the user opens
+        a chat (from that list, its search, or the chat list). Returns the chat title or None.
+        """
+        page.keyboard.press("Escape")  # closes the currently open chat, so any chat that opens is the choice
+        time.sleep(0.8)
+        baseline = self._open_chat_title(page)
+        try:
+            new_chat = page.query_selector("[role=button][aria-label='New chat'], button[aria-label='New chat']")
+            if new_chat:
+                new_chat.click()
+        except Exception:
+            pass  # the chat list and its search still work for picking
+        self.log("Pick the contact in WhatsApp — the PDF and message will be added automatically.")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            title = self._open_chat_title(page)
+            if title and title != baseline:
+                return title
+            time.sleep(0.5)
+        return None
+
+    def attach_invoice(self, phone, caption, pdf_path, auto_send=False, pick_timeout=300):
+        """
+        Gets the PDF into a chat inside WhatsApp Desktop with `caption` as its message:
+          phone given -> opens that chat directly;
+          phone None  -> shows WhatsApp's contact list and waits for the user to pick the chat.
+        Attaches through WhatsApp's own file input and leaves the preview open for the user to press
+        Send. Blocking — run on a background thread. Returns (ok, message).
         """
         from playwright.sync_api import sync_playwright
         from whatsapp_automator import WhatsAppAutomator
@@ -158,7 +191,11 @@ class WhatsAppDesktopBridge:
             if not wa.is_logged_in() and not wa.wait_for_login(timeout=30):
                 return False, "WhatsApp Desktop is not logged in."
 
-            page.goto(self.chat_url(page.url, phone), wait_until="domcontentloaded", timeout=30000)
+            if phone:
+                page.goto(self.chat_url(page.url, phone), wait_until="domcontentloaded", timeout=30000)
+            elif not self._wait_for_user_to_pick_chat(page, pick_timeout):
+                return False, "no chat was picked in WhatsApp"
+
             status = wa._wait_for_chat(timeout=30000)
             if status == "INVALID_PHONE":
                 return False, f"{phone} is not on WhatsApp."

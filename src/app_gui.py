@@ -2023,7 +2023,8 @@ class InvoiceAutomationApp(QMainWindow):
             )
             menu.addSeparator()
 
-        act_picker_app = menu.addAction("📱 Open WhatsApp App (Select Contact — paste PDF with Ctrl+V)...")
+        act_picker_app = menu.addAction("📱 Open WhatsApp App (Select Contact)...")
+        act_picker_app.setToolTip("Opens WhatsApp's contact list; pick the contact and the PDF + message are added automatically")
         act_picker_app.triggered.connect(
             lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
             self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="desktop")
@@ -2096,7 +2097,9 @@ class InvoiceAutomationApp(QMainWindow):
         )
         self.log(msg)
 
-        if pending:
+        if pending and not phone:
+            self._set_share_status(row_idx, "👆 Pick the contact in WhatsApp...", "#eab308")
+        elif pending:
             self._set_share_status(row_idx, "⏳ Attaching in WhatsApp App...", "#eab308")
         elif success:
             self._set_share_status(row_idx, "📋 PDF ready to drop", "#38bdf8")

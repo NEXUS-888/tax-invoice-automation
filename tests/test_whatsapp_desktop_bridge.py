@@ -121,6 +121,27 @@ class TestUserEnvironment(unittest.TestCase):
         self.assertIsNone(read())
 
 
+@patch("whatsapp_desktop_bridge.time.sleep")
+class TestPickChat(unittest.TestCase):
+    def setUp(self):
+        self.bridge = WhatsAppDesktopBridge()
+        self.page = MagicMock()
+
+    def test_closes_open_chat_shows_contacts_and_returns_picked_chat(self, _sleep):
+        titles = iter([None, None, None, "ACME FUELS"])  # baseline after Escape, then user picks
+        with patch.object(self.bridge, "_open_chat_title", side_effect=lambda p: next(titles)):
+            self.assertEqual(self.bridge._wait_for_user_to_pick_chat(self.page, timeout=60), "ACME FUELS")
+        self.page.keyboard.press.assert_called_once_with("Escape")
+        self.page.query_selector.return_value.click.assert_called_once()  # "New chat" list opened
+
+    def test_same_chat_still_open_is_not_a_pick(self, _sleep):
+        """If Escape did not close the chat, only a different chat counts as the user's choice."""
+        clock = iter(range(0, 1000, 10))
+        with patch.object(self.bridge, "_open_chat_title", return_value="OLD CHAT"), \
+                patch("whatsapp_desktop_bridge.time.time", side_effect=lambda: next(clock)):
+            self.assertIsNone(self.bridge._wait_for_user_to_pick_chat(self.page, timeout=60))
+
+
 class TestAttachInvoice(unittest.TestCase):
     """attach_invoice against a fake WhatsApp page: never touches the real app."""
 
@@ -198,6 +219,22 @@ class TestAttachInvoice(unittest.TestCase):
         ok, msg = self.bridge.attach_invoice("919876543210", "m", self.pdf)
         self.assertFalse(ok)
         self.assertIn("not found", msg)
+
+    def test_without_phone_waits_for_user_to_pick_chat(self):
+        with patch.object(WhatsAppDesktopBridge, "_wait_for_user_to_pick_chat", return_value="ACME") as pick:
+            ok, _ = self.bridge.attach_invoice(None, "m", self.pdf)
+        self.assertTrue(ok)
+        pick.assert_called_once()
+        self.page.goto.assert_not_called()
+        self.helpers["_attach_pdf_document"].assert_called_once()
+        self.helpers["_click_send"].assert_not_called()
+
+    def test_without_phone_and_no_pick_attaches_nothing(self):
+        with patch.object(WhatsAppDesktopBridge, "_wait_for_user_to_pick_chat", return_value=None):
+            ok, msg = self.bridge.attach_invoice(None, "m", self.pdf)
+        self.assertFalse(ok)
+        self.assertIn("no chat was picked", msg)
+        self.helpers["_attach_pdf_document"].assert_not_called()
 
     def test_connection_error_is_reported_not_raised(self):
         self.pw.chromium.connect_over_cdp.side_effect = RuntimeError("ECONNREFUSED")

@@ -282,13 +282,16 @@ class TestShareEntryPoint(unittest.TestCase):
 
     @patch.object(WhatsAppDispatcher, "attach_in_background")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
-    def test_desktop_without_phone_does_not_paste_blind(self, _open, mock_bg, _wb, _popen):
+    def test_desktop_without_phone_lets_user_pick_then_attaches(self, mock_open, mock_bg, _wb, _popen):
         ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
             "ACME", None, "1", "M", self.pdf, target="desktop")
         self.assertTrue(ok)
-        self.assertFalse(pending)
-        mock_bg.assert_not_called()
-        self.assertIn("Ctrl+V", msg)
+        self.assertTrue(pending)
+        self.assertIn("pick the contact", msg)
+        mock_open.assert_not_called()  # no whatsapp:// "Send to" picker (it sends the text on its own)
+        phone, message, pdf = mock_bg.call_args[0]
+        self.assertIsNone(phone)
+        self.assertIn(REMINDER, message)
 
     @patch.object(WhatsAppDispatcher, "run_fallback", return_value="hint")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
@@ -375,18 +378,56 @@ class TestPlaywrightSharePreview(unittest.TestCase):
 
 
 class TestCaptionTyping(unittest.TestCase):
-    def test_newlines_use_shift_enter_not_enter(self):
+    def _auto(self, box_texts):
         auto = WhatsAppAutomator(tempfile.mkdtemp(), log_callback=lambda m: None)
         auto.page = MagicMock()
         el = MagicMock()
         el.is_visible.return_value = True
+        el.inner_text.side_effect = list(box_texts)  # before typing, after typing
         auto.page.query_selector_all.return_value = [el]
+        return auto, el
+
+    def test_newlines_use_shift_enter_not_enter(self):
+        auto, el = self._auto(["", "line1\n\nline3"])
         with patch("whatsapp_automator.time.sleep"):
             self.assertTrue(auto._type_caption_in_preview("line1\n\nline3"))
+        el.focus.assert_called_once()
+        el.click.assert_not_called()
         pressed = [c[0][0] for c in auto.page.keyboard.press.call_args_list]
         self.assertEqual(pressed, ["Shift+Enter", "Shift+Enter"])
-        typed = "".join(c[0][0] for c in auto.page.keyboard.type.call_args_list)
-        self.assertNotIn("\n", typed)
+        inserted = "".join(c[0][0] for c in auto.page.keyboard.insert_text.call_args_list)
+        self.assertEqual(inserted, "line1line3")
+
+    def test_half_typed_caption_is_replaced_not_appended(self):
+        auto, _ = self._auto(["line1 partial", "line1\nline3"])
+        with patch("whatsapp_automator.time.sleep"):
+            self.assertTrue(auto._type_caption_in_preview("line1\nline3"))
+        pressed = [c[0][0] for c in auto.page.keyboard.press.call_args_list]
+        self.assertEqual(pressed[:2], ["Control+A", "Delete"])
+
+    def test_reports_failure_when_caption_did_not_stick(self):
+        auto, _ = self._auto(["", ""])
+        with patch("whatsapp_automator.time.sleep"):
+            self.assertFalse(auto._type_caption_in_preview("line1\nline3"))
+
+    def test_waits_for_caption_box_to_appear(self):
+        auto, el = self._auto(["", "line1\nline3"])
+        auto.page.query_selector_all.side_effect = lambda sel: [el] if calls.append(sel) or len(calls) > 7 else []
+        calls = []
+        with patch("whatsapp_automator.time.sleep"):
+            self.assertTrue(auto._type_caption_in_preview("line1\nline3"))
+
+    def test_no_caption_box_gives_up(self):
+        auto, _ = self._auto([])
+        auto.page.query_selector_all.return_value = []
+        clock = iter(range(0, 100))
+        with patch("whatsapp_automator.time.sleep"), patch("whatsapp_automator.time.time", side_effect=lambda: next(clock)):
+            self.assertFalse(auto._type_caption_in_preview("line1", timeout=5))
+
+    def test_reports_failure_on_duplicated_caption(self):
+        auto, _ = self._auto(["", "line1\nline3\nline1\nline3"])
+        with patch("whatsapp_automator.time.sleep"):
+            self.assertFalse(auto._type_caption_in_preview("line1\nline3"))
 
 
 if __name__ == "__main__":
