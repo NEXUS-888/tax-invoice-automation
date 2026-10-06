@@ -1788,10 +1788,15 @@ class InvoiceAutomationApp(QMainWindow):
             QMessageBox.warning(self, "Error", f"Failed to generate PDF invoice for {sheet_name}.")
 
     def open_pdf_file(self, pdf_path):
-        """Launches the system default PDF viewer for the given PDF path."""
+        """Launches the system default PDF viewer for the given PDF path (cross-platform)."""
         if os.path.exists(pdf_path):
             try:
-                os.startfile(pdf_path)
+                if hasattr(os, 'startfile'):
+                    os.startfile(pdf_path)
+                elif sys.platform == 'darwin':
+                    subprocess.Popen(['open', pdf_path])
+                else:
+                    subprocess.Popen(['xdg-open', pdf_path])
                 self.log(f"Opened PDF file: {pdf_path}")
             except Exception as e:
                 self.log(f"Error opening PDF: {str(e)}")
@@ -1800,12 +1805,18 @@ class InvoiceAutomationApp(QMainWindow):
             QMessageBox.warning(self, "File Not Found", f"PDF file does not exist:\n{pdf_path}")
 
     def open_output_folder(self):
-        """Opens the generated PDF output directory in Windows Explorer."""
+        """Opens the generated PDF output directory in system file explorer (cross-platform)."""
         target_dir = self.current_pdf_dir if os.path.exists(self.current_pdf_dir) else self.output_dir
         if not os.path.exists(target_dir):
             os.makedirs(target_dir, exist_ok=True)
         try:
-            subprocess.Popen(f'explorer "{os.path.abspath(target_dir)}"')
+            abs_dir = os.path.abspath(target_dir)
+            if hasattr(os, 'startfile'):
+                os.startfile(abs_dir)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', abs_dir])
+            else:
+                subprocess.Popen(['xdg-open', abs_dir])
             self.log(f"Opened output directory: {target_dir}")
         except Exception as e:
             self.log(f"Error opening folder: {str(e)}")
@@ -2041,13 +2052,19 @@ class InvoiceAutomationApp(QMainWindow):
         )
 
     def highlight_pdf_file(self, pdf_path):
-        """Highlights the specified PDF invoice in Windows Explorer."""
+        """Highlights the specified PDF invoice in system file manager (cross-platform)."""
         if pdf_path and os.path.exists(pdf_path):
             try:
-                subprocess.Popen(f'explorer /select,"{os.path.abspath(pdf_path)}"')
-                self.log(f"Highlighted PDF in Explorer: {pdf_path}")
+                abs_p = os.path.abspath(pdf_path)
+                if sys.platform == 'win32':
+                    subprocess.Popen(f'explorer /select,"{abs_p}"')
+                elif sys.platform == 'darwin':
+                    subprocess.Popen(['open', '-R', abs_p])
+                else:
+                    subprocess.Popen(['xdg-open', os.path.dirname(abs_p)])
+                self.log(f"Highlighted PDF in file manager: {pdf_path}")
             except Exception as e:
-                self.log(f"Error highlighting PDF in Explorer: {str(e)}")
+                self.log(f"Error highlighting PDF: {str(e)}")
 
     def copy_pdf_file_to_clipboard(self, pdf_path):
         """Copies the PDF invoice to Windows clipboard (CF_HDROP)."""

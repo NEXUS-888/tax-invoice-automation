@@ -1,4 +1,5 @@
 import os
+import sys
 import webbrowser
 import urllib.parse
 import subprocess
@@ -90,10 +91,13 @@ class WhatsAppDispatcher:
                 wa_url = f"whatsapp://send?phone={clean_phone}&text={encoded_msg}"
             else:
                 wa_url = f"whatsapp://send?text={encoded_msg}"
-            try:
-                os.startfile(wa_url)
-                opened = True
-            except Exception:
+            if hasattr(os, 'startfile'):
+                try:
+                    os.startfile(wa_url)
+                    opened = True
+                except Exception:
+                    pass
+            if not opened:
                 try:
                     webbrowser.open(wa_url)
                     opened = True
@@ -128,10 +132,15 @@ class WhatsAppDispatcher:
             except Exception:
                 pass
 
-        # Highlight PDF in Explorer so user can also drag & drop
+        # Highlight PDF in file manager (cross-platform) so user can also drag & drop
         if open_explorer and abs_pdf and os.path.exists(abs_pdf):
             try:
-                subprocess.Popen(f'explorer /select,"{abs_pdf}"')
+                if sys.platform == 'win32':
+                    subprocess.Popen(f'explorer /select,"{abs_pdf}"')
+                elif sys.platform == 'darwin':
+                    subprocess.Popen(['open', '-R', abs_pdf])
+                else: # linux / other
+                    subprocess.Popen(['xdg-open', os.path.dirname(abs_pdf)])
             except Exception:
                 pass
 
