@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
     QTabWidget, QFileDialog, QMessageBox, QTextEdit, QHeaderView,
     QGroupBox, QSpinBox, QDateEdit, QSplitter, QListWidget, QListWidgetItem,
-    QDialog, QFormLayout, QDoubleSpinBox, QProgressBar, QMenu
+    QDialog, QFormLayout, QDoubleSpinBox, QProgressBar, QMenu, QToolTip
 )
 from PyQt6.QtCore import Qt, QDate, QThread, QObject, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QFont, QColor, QIcon, QCursor
@@ -251,6 +251,7 @@ class WhatsAppWorker(QObject):
     log_message = pyqtSignal(str)
     connected = pyqtSignal(bool, str)
     single_result = pyqtSignal(object, bool, str)
+    share_result = pyqtSignal(object, bool, str)
     bulk_result = pyqtSignal(int, bool, str)
     bulk_finished = pyqtSignal(int, int)
 
@@ -302,6 +303,8 @@ class WhatsAppWorker(QObject):
             try:
                 if action == 'send_single':
                     self._do_send_single(task['item'])
+                elif action == 'share_preview':
+                    self._do_share_preview(task['item'])
                 elif action == 'send_bulk':
                     self._do_send_bulk(task['jobs'])
                 elif action == 'close':
@@ -331,6 +334,28 @@ class WhatsAppWorker(QObject):
             self.single_result.emit(item, ok, msg)
         except Exception as e:
             self.single_result.emit(item, False, f"Error: {e}")
+
+    def _do_share_preview(self, item):
+        if not self.automator:
+            self.share_result.emit(item, False, "WhatsApp is not connected.")
+            return
+        try:
+            ok, msg = self.automator.prepare_invoice_share(
+                phone_input=item['phone'],
+                agency_name=item['agency_name'],
+                invoice_no=item['inv_no'],
+                month_desc=item['month_desc'],
+                pdf_path=item['pdf_path'],
+                auto_send=False,
+            )
+            self.share_result.emit(item, ok, msg)
+        except Exception as e:
+            self.share_result.emit(item, False, f"Error: {e}")
+
+    def queue_share_preview(self, item):
+        """Queue an interactive share: attach PDF + caption, leave Send to the user (called from main thread)."""
+        if self._queue:
+            self._queue.put({'action': 'share_preview', 'item': item})
 
     def _do_send_bulk(self, jobs):
         success_count = 0
@@ -400,6 +425,8 @@ class InvoiceAutomationApp(QMainWindow):
     request_single_send = pyqtSignal(object)
     request_bulk_send = pyqtSignal(object)
     request_close_whatsapp = pyqtSignal()
+    # Emitted from the dispatcher's background attach thread; Qt queues it onto the GUI thread
+    desktop_share_finished = pyqtSignal(object, bool, str)
 
     def __init__(self):
         super().__init__()
@@ -436,6 +463,7 @@ class InvoiceAutomationApp(QMainWindow):
         self.contacts_mgr = ContactsManager(self.contacts_path)
         self.state_mgr = StateManager(self.state_path)
         self.wa_dispatcher = WhatsAppDispatcher()
+        self.desktop_share_finished.connect(self.on_share_result)
         self.wa_automator = None
         self.wa_thread = None
         self.wa_worker = None
@@ -994,6 +1022,7 @@ class InvoiceAutomationApp(QMainWindow):
         self.wa_worker.log_message.connect(self.log)
         self.wa_worker.connected.connect(self.on_whatsapp_connected)
         self.wa_worker.single_result.connect(self.on_single_send_result)
+        self.wa_worker.share_result.connect(self.on_share_result)
         self.wa_worker.bulk_result.connect(self.on_bulk_send_result)
         self.wa_worker.bulk_finished.connect(self.on_bulk_send_finished)
         self.wa_worker.start_in_thread()
@@ -2024,45 +2053,85 @@ class InvoiceAutomationApp(QMainWindow):
 
     def execute_direct_share(self, agency_name, phone, inv_no, month_desc, pdf_path, row_idx=None, target=None):
         """
-        Executes direct WhatsApp share via WhatsAppDispatcher:
-        1. Copies PDF to Windows Clipboard (CF_HDROP).
-        2. Opens WhatsApp Desktop App (or Web) with pre-filled invoice message.
-        3. Automatically activates WhatsApp window and attaches the PDF invoice directly into chat!
-        4. Updates status in dispatch table and logs message.
+        Shares one agency invoice, picking the most reliable route available:
+        1. Connected WhatsApp Web session (any target, phone known) -> Playwright attaches the PDF via
+           the page's file input and fills the caption; the user presses Send. Deterministic.
+        2. Otherwise WhatsAppDispatcher opens WhatsApp Desktop/Web and attaches in the background,
+           falling back to clipboard + Explorer pre-selection if anything fails.
+        Results arrive in on_share_result; the GUI thread never blocks.
         """
-        # If user picked Web AND automated session is connected, route through worker for seamless direct delivery!
-        if target == "web" and self.whatsapp_connected and self.wa_worker:
-            item = {
-                'row_idx': row_idx if row_idx is not None else 0,
-                'agency_name': agency_name,
-                'phone': phone,
-                'inv_no': inv_no,
-                'month_desc': month_desc,
-                'pdf_path': pdf_path
-            }
-            self.send_single_agency_whatsapp(item)
+        item = {
+            'row_idx': row_idx,
+            'agency_name': agency_name,
+            'phone': phone,
+            'inv_no': inv_no,
+            'month_desc': month_desc,
+            'pdf_path': pdf_path,
+            'target': target,
+        }
+
+        if phone and self.whatsapp_connected and self.wa_worker:
+            item['route'] = 'web_session'
+            self._set_share_status(row_idx, "⏳ Attaching in WhatsApp Web...", "#eab308")
+            self.log(f"Attaching invoice for {agency_name} in the connected WhatsApp Web session...")
+            self.wa_worker.queue_share_preview(item)
             return
 
-        success, msg = self.wa_dispatcher.share_invoice_to_whatsapp(
+        success, msg, pending = self.wa_dispatcher.share_invoice_to_whatsapp(
             agency_name=agency_name,
             phone=phone,
             invoice_no=inv_no,
             month_desc=month_desc,
             pdf_path=pdf_path,
             target=target,
-            open_explorer=False
+            on_complete=lambda ok, m, it=item: self.desktop_share_finished.emit(it, ok, m),
         )
-
         self.log(msg)
 
-        if row_idx is not None and row_idx < self.dispatch_table.rowCount():
-            dest_badge = "App" if target in ("desktop", "app") else ("Web" if target == "web" else "Link")
-            status_item = QTableWidgetItem(f"✅ PDF Attached [{dest_badge}]")
-            status_item.setForeground(QColor("#22c55e"))
-            font = QFont()
-            font.setBold(True)
-            status_item.setFont(font)
-            self.dispatch_table.setItem(row_idx, 5, status_item)
+        if pending:
+            self._set_share_status(row_idx, "⏳ Attaching in WhatsApp App...", "#eab308")
+        elif success:
+            self._set_share_status(row_idx, "📋 PDF ready to drop", "#38bdf8")
+            self._show_share_hint(msg)
+        else:
+            self._set_share_status(row_idx, "❌ Could not open WhatsApp", "#ef4444")
+            self._show_share_hint(msg)
+
+    def _set_share_status(self, row_idx, text, color):
+        if row_idx is None or row_idx >= self.dispatch_table.rowCount():
+            return
+        status_item = QTableWidgetItem(text)
+        status_item.setForeground(QColor(color))
+        font = QFont()
+        font.setBold(True)
+        status_item.setFont(font)
+        self.dispatch_table.setItem(row_idx, 5, status_item)
+
+    def _show_share_hint(self, text):
+        """Non-intrusive hint next to the cursor (no modal dialog)."""
+        QToolTip.showText(QCursor.pos(), text, None, self.rect(), 8000)
+
+    @pyqtSlot(object, bool, str)
+    def on_share_result(self, item, attached, msg):
+        """Result of an interactive share from the Playwright worker or the desktop attach thread."""
+        agency_name = item.get('agency_name', '')
+        row_idx = item.get('row_idx')
+        via_web = item.get('route') == 'web_session'
+        badge = "Web" if via_web else "App"
+
+        if attached:
+            self._set_share_status(row_idx, f"✅ PDF Attached [{badge}] — press Send", "#22c55e")
+            self.log(f"✅ {agency_name}: {msg}")
+            return
+
+        if via_web:
+            # The desktop thread already ran the fallback; the Playwright path has not.
+            pdf_path = item.get('pdf_path', '')
+            if pdf_path and os.path.exists(pdf_path):
+                msg = self.wa_dispatcher.run_fallback(os.path.abspath(pdf_path), reason=f"Auto-attach failed ({msg}).")
+        self._set_share_status(row_idx, "📋 PDF ready to drop", "#38bdf8")
+        self.log(f"⚠️ {agency_name}: {msg}")
+        self._show_share_hint(msg)
 
     def highlight_pdf_file(self, pdf_path):
         """Highlights the specified PDF invoice in system file manager (cross-platform)."""

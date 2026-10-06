@@ -31,6 +31,44 @@ class TestGUIIntegration(unittest.TestCase):
         self.gui.close()
         self.temp_dir.cleanup()
 
+    def _one_row_table(self):
+        self.gui.dispatch_table.setRowCount(1)
+
+    def test_share_routes_to_connected_web_session(self):
+        self._one_row_table()
+        self.gui.whatsapp_connected = True
+        self.gui.wa_worker = MagicMock()
+        with patch.object(self.gui.wa_dispatcher, "share_invoice_to_whatsapp") as mock_disp:
+            self.gui.execute_direct_share("ACME", "9876543210", "1", "M", "x.pdf", 0, target="desktop")
+        mock_disp.assert_not_called()
+        item = self.gui.wa_worker.queue_share_preview.call_args[0][0]
+        self.assertEqual(item['route'], 'web_session')
+        self.assertIn("Attaching", self.gui.dispatch_table.item(0, 5).text())
+
+    def test_share_without_session_uses_dispatcher_and_result_updates_row(self):
+        self._one_row_table()
+        self.gui.whatsapp_connected = False
+        with patch.object(self.gui.wa_dispatcher, "share_invoice_to_whatsapp",
+                          return_value=(True, "attaching", True)) as mock_disp:
+            self.gui.execute_direct_share("ACME", "9876543210", "1", "M", "x.pdf", 0, target="desktop")
+        on_complete = mock_disp.call_args.kwargs["on_complete"]
+        on_complete(True, "pasted")
+        app.processEvents()
+        self.assertIn("PDF Attached [App]", self.gui.dispatch_table.item(0, 5).text())
+
+    def test_web_session_failure_triggers_fallback(self):
+        self._one_row_table()
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+            pdf = tf.name
+        try:
+            with patch.object(self.gui.wa_dispatcher, "run_fallback", return_value="hint") as mock_fb:
+                self.gui.on_share_result({'row_idx': 0, 'agency_name': 'A', 'pdf_path': pdf,
+                                          'route': 'web_session'}, False, "Chat did not load")
+            mock_fb.assert_called_once()
+            self.assertIn("ready to drop", self.gui.dispatch_table.item(0, 5).text())
+        finally:
+            os.remove(pdf)
+
     def test_dispatch_table_columns(self):
         # Column count must be 8
         self.assertEqual(self.gui.dispatch_table.columnCount(), 8)

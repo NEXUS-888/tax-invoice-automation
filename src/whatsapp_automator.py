@@ -6,6 +6,19 @@ import re
 import random
 
 
+PAYMENT_REMINDER_NOTE = "Note : please complete the payment before 10th of this month."
+
+
+def build_invoice_message(agency_name, invoice_no, month_desc):
+    """Standard invoice WhatsApp message; always carries the mandatory payment reminder note."""
+    return (
+        f"Dear {agency_name},\n\n"
+        f"Please find attached your invoice (Invoice No: {invoice_no}) for {month_desc}.\n\n"
+        f"{PAYMENT_REMINDER_NOTE}\n\n"
+        f"Thank you,\nANANYA ENTERPRISES"
+    )
+
+
 class WhatsAppAutomator:
     """Sends invoice PDFs via WhatsApp Web using Playwright."""
 
@@ -381,7 +394,13 @@ class WhatsAppAutomator:
                     if el and el.is_visible():
                         el.click()
                         time.sleep(0.2)
-                        self.page.keyboard.type(caption_text, delay=1)
+                        # A bare "\n" is an Enter keypress, which would send the preview early
+                        lines = caption_text.split("\n")
+                        for i, line in enumerate(lines):
+                            if line:
+                                self.page.keyboard.type(line, delay=1)
+                            if i < len(lines) - 1:
+                                self.page.keyboard.press("Shift+Enter")
                         time.sleep(0.3)
                         return True
             except Exception:
@@ -601,12 +620,7 @@ class WhatsAppAutomator:
         """Opens chat → sends text message → attaches & sends PDF invoice."""
         abs_pdf = os.path.abspath(pdf_path)
 
-        text_message = (
-            f"Dear {agency_name},\n\n"
-            f"Please find attached your invoice (Invoice No: {invoice_no}) for {month_desc}.\n\n"
-            f"Note: Please complete the payment before 10th of this month.\n\n"
-            f"Thank you,\nANANYA ENTERPRISES"
-        )
+        text_message = build_invoice_message(agency_name, invoice_no, month_desc)
 
         try:
             self.log(f"Sending invoice to {agency_name} ({clean_phone})...")
@@ -666,6 +680,69 @@ class WhatsAppAutomator:
 
         except Exception as e:
             self.log(f"  ❌ Error sending to {agency_name}: {e}")
+            return False, str(e)
+
+    # ── Interactive "Share App" (preview left open for review) ───
+
+    def prepare_invoice_share(self, phone_input, agency_name, invoice_no, month_desc, pdf_path, auto_send=False):
+        """
+        Opens the chat in the connected WhatsApp Web session, attaches the PDF through the page's
+        file input (no OS clipboard, focus or keystroke injection involved) and puts the invoice
+        message in the caption. With auto_send=False the preview is left open for the user to press Send.
+        Must run on the Playwright worker thread. Returns (ok, message).
+        """
+        if not self.page:
+            return False, "WhatsApp not connected."
+        phones = self.parse_phones(phone_input)
+        if not phones:
+            return False, "No valid phone number"
+        abs_pdf = os.path.abspath(pdf_path) if pdf_path else ""
+        if not abs_pdf or not os.path.exists(abs_pdf):
+            return False, f"PDF not found: {pdf_path}"
+
+        clean_phone = phones[0]
+        try:
+            try:
+                self.page.bring_to_front()
+            except Exception:
+                pass
+
+            if not self.is_logged_in():
+                self.log("📱 WhatsApp Web is not logged in — scan the QR code in the browser window...")
+                if not self.wait_for_login(timeout=60):
+                    return False, "WhatsApp Web is not logged in"
+
+            self._open_chat_for_number(clean_phone)
+            chat_status = self._wait_for_chat(timeout=20000)
+            if chat_status == "INVALID_PHONE":
+                return False, f"{clean_phone} not on WhatsApp"
+            if not chat_status:
+                return False, "Chat did not load"
+            self._dismiss_failed_popup()
+
+            if not self._attach_pdf_document(abs_pdf):
+                return False, "Could not attach PDF document"
+            if not self._wait_for_document_preview(abs_pdf, timeout=15):
+                return False, "PDF preview did not appear"
+
+            caption_ok = self._type_caption_in_preview(
+                build_invoice_message(agency_name, invoice_no, month_desc)
+            )
+            if not caption_ok:
+                self.log("  ⚠️ Could not fill the caption; the PDF is attached without the message.")
+
+            if auto_send:
+                self._click_send()
+                self._wait_for_upload_and_delivery(abs_pdf, timeout=25)
+                if self._dismiss_failed_popup():
+                    return False, "Message failed to send"
+                return True, "Sent"
+
+            self.log(f"  ✅ PDF attached for {agency_name} ({clean_phone}) — review and press Send.")
+            return True, "PDF attached — press Send in WhatsApp" if caption_ok else \
+                "PDF attached (add message manually) — press Send in WhatsApp"
+        except Exception as e:
+            self.log(f"  ❌ Share error for {agency_name}: {e}")
             return False, str(e)
 
     # ── Multi-recipient dispatcher ────────────────────────────────
