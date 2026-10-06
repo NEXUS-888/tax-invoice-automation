@@ -38,10 +38,92 @@ class WhatsAppDispatcher:
         """
         Copies the PDF invoice file to Windows Clipboard (CF_HDROP).
         Pressing Ctrl+V in WhatsApp instantly attaches the PDF as a document.
+        Uses native Win32 API (CF_HDROP) + PowerShell Set-Clipboard + Qt fallback.
         """
         abs_path = os.path.abspath(pdf_path)
         if not os.path.exists(abs_path):
             return False
+
+        copied = False
+
+        # 1. Native Windows Win32 CF_HDROP clipboard (direct & instant for WhatsApp Desktop)
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                CF_HDROP = 15
+                GHND = 0x0042
+
+                class DROPFILES(ctypes.Structure):
+                    _fields_ = [
+                        ("pFiles", wintypes.DWORD),
+                        ("pt", wintypes.POINT),
+                        ("fNC", wintypes.BOOL),
+                        ("fWide", wintypes.BOOL),
+                    ]
+
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+
+                kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+                kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+                kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+                kernel32.GlobalLock.restype = wintypes.LPVOID
+                kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+                kernel32.GlobalUnlock.restype = wintypes.BOOL
+                kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+                kernel32.GlobalFree.restype = wintypes.HGLOBAL
+
+                user32.OpenClipboard.argtypes = [wintypes.HWND]
+                user32.OpenClipboard.restype = wintypes.BOOL
+                user32.EmptyClipboard.argtypes = []
+                user32.EmptyClipboard.restype = wintypes.BOOL
+                user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+                user32.SetClipboardData.restype = wintypes.HANDLE
+                user32.CloseClipboard.argtypes = []
+                user32.CloseClipboard.restype = wintypes.BOOL
+
+                path_bytes = (abs_path + "\0\0").encode("utf-16le")
+                dropfiles = DROPFILES()
+                dropfiles.pFiles = ctypes.sizeof(DROPFILES)
+                dropfiles.pt = wintypes.POINT(0, 0)
+                dropfiles.fNC = False
+                dropfiles.fWide = True
+
+                total_bytes = ctypes.sizeof(DROPFILES) + len(path_bytes)
+                h_global = kernel32.GlobalAlloc(GHND, total_bytes)
+                if h_global:
+                    ptr = kernel32.GlobalLock(h_global)
+                    if ptr:
+                        ctypes.memmove(ptr, ctypes.byref(dropfiles), ctypes.sizeof(DROPFILES))
+                        ctypes.memmove(ptr + ctypes.sizeof(DROPFILES), path_bytes, len(path_bytes))
+                        kernel32.GlobalUnlock(h_global)
+
+                        if user32.OpenClipboard(None):
+                            user32.EmptyClipboard()
+                            res = user32.SetClipboardData(CF_HDROP, h_global)
+                            user32.CloseClipboard()
+                            if res:
+                                copied = True
+                        else:
+                            kernel32.GlobalFree(h_global)
+                    else:
+                        kernel32.GlobalFree(h_global)
+            except Exception:
+                pass
+
+            # 2. PowerShell Set-Clipboard fallback
+            if not copied:
+                try:
+                    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                    ps_cmd = f'Set-Clipboard -LiteralPath "{abs_path}"'
+                    subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], check=True, creationflags=flags)
+                    copied = True
+                except Exception:
+                    pass
+
+        # 3. Qt QMimeData fallback (cross-platform)
         try:
             if QApplication:
                 app = QApplication.instance()
@@ -49,10 +131,11 @@ class WhatsAppDispatcher:
                     mime = QMimeData()
                     mime.setUrls([QUrl.fromLocalFile(abs_path)])
                     app.clipboard().setMimeData(mime)
-                    return True
+                    copied = True
         except Exception:
             pass
-        return False
+
+        return copied
 
     def build_invoice_message(self, agency_name, invoice_no, month_desc):
         """Builds standard invoice text message with payment reminder note."""
