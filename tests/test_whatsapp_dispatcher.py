@@ -282,16 +282,30 @@ class TestShareEntryPoint(unittest.TestCase):
 
     @patch.object(WhatsAppDispatcher, "attach_in_background")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
-    def test_desktop_without_phone_lets_user_pick_then_attaches(self, mock_open, mock_bg, _wb, _popen):
-        ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
-            "ACME", None, "1", "M", self.pdf, target="desktop")
+    def test_desktop_without_phone_uses_windows_share(self, mock_open, mock_bg, _wb, _popen):
+        cb = MagicMock()
+        with patch.object(WhatsAppDispatcher, "share_with_windows",
+                          return_value=(True, "Windows Share is open")) as share:
+            ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
+                "ACME", None, "105", "M", self.pdf, target="desktop", on_complete=cb)
         self.assertTrue(ok)
         self.assertTrue(pending)
-        self.assertIn("pick the contact", msg)
         mock_open.assert_not_called()  # no whatsapp:// "Send to" picker (it sends the text on its own)
-        phone, message, pdf = mock_bg.call_args[0]
-        self.assertIsNone(phone)
+        mock_bg.assert_not_called()
+        pdf, message, title = share.call_args[0]
+        self.assertEqual(pdf, os.path.abspath(self.pdf))
         self.assertIn(REMINDER, message)
+        self.assertEqual(title, "Invoice 105")
+        self.assertIs(share.call_args.kwargs["on_complete"], cb)
+
+    @patch.object(WhatsAppDispatcher, "run_fallback", return_value="hint")
+    def test_windows_share_unavailable_falls_back(self, mock_fallback, _wb, _popen):
+        with patch.object(WhatsAppDispatcher, "share_with_windows", return_value=(False, "helper missing")):
+            ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
+                "ACME", None, "1", "M", self.pdf, target="desktop")
+        self.assertFalse(ok)
+        self.assertFalse(pending)
+        self.assertEqual(msg, "hint")
 
     @patch.object(WhatsAppDispatcher, "run_fallback", return_value="hint")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
@@ -316,6 +330,85 @@ class TestShareEntryPoint(unittest.TestCase):
         with patch.object(WhatsAppDispatcher, "attach_in_background"):
             result = self.dispatcher.send_agency_invoice("ACME", "9876543210", "1", "M", self.pdf)
         self.assertEqual(len(result), 2)
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows Share is Windows-only")
+class TestWindowsShare(unittest.TestCase):
+    def setUp(self):
+        self.dispatcher = WhatsAppDispatcher()
+        self.pdf = _make_pdf()
+
+    def tearDown(self):
+        os.remove(self.pdf)
+
+    def _share(self, stdout=b"", side_effect=None):
+        proc = MagicMock(pid=4242)
+        if side_effect:
+            proc.communicate.side_effect = side_effect
+        else:
+            proc.communicate.return_value = (stdout, None)
+        done = threading.Event()
+        result = {}
+        with patch("whatsapp_dispatcher.share_helper_path", return_value=sys.executable), \
+                patch("whatsapp_dispatcher.subprocess.Popen", return_value=proc) as popen, \
+                patch.object(WhatsAppDispatcher, "_set_clipboard_text", return_value=True) as clip, \
+                patch("ctypes.windll.user32.AllowSetForegroundWindow", create=True) as allow, \
+                patch.object(WhatsAppDispatcher, "run_fallback", return_value="fallback hint") as fallback:
+            started, msg = self.dispatcher.share_with_windows(
+                self.pdf, "Dear ACME,\nNote", "Invoice 1",
+                on_complete=lambda ok, m: (result.update(ok=ok, msg=m), done.set()))
+            done.wait(5)
+        return started, msg, result, popen, clip, allow, fallback
+
+    def test_whatsapp_chosen(self):
+        started, msg, result, popen, clip, allow, fallback = self._share(b"TARGET:WhatsApp\r\n")
+        self.assertTrue(started)
+        self.assertIn("click WhatsApp", msg)
+        self.assertTrue(result["ok"])
+        self.assertIn("Shared to WhatsApp", result["msg"])
+        args = popen.call_args[0][0]
+        self.assertEqual(args[1], self.pdf)
+        self.assertEqual(args[3], "Invoice 1")
+        self.assertFalse(os.path.exists(args[2]))  # message file cleaned up
+        clip.assert_called_once_with("Dear ACME,\nNote")
+        allow.assert_called_once_with(4242)
+        fallback.assert_not_called()
+
+    def test_cancelled_has_no_fallback(self):
+        _, _, result, _, _, _, fallback = self._share(b"CANCELLED\r\n")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["msg"], "Share was cancelled.")
+        fallback.assert_not_called()
+
+    def test_helper_error_falls_back(self):
+        _, _, result, _, _, _, fallback = self._share(b"ERROR:boom\r\n")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["msg"], "fallback hint")
+        self.assertIn("boom", fallback.call_args.kwargs["reason"])
+
+    def test_missing_helper(self):
+        with patch("whatsapp_dispatcher.share_helper_path", return_value=r"C:\nope\ShareInvoice.exe"):
+            started, msg = self.dispatcher.share_with_windows(self.pdf, "m", "t")
+        self.assertFalse(started)
+        self.assertIn("missing", msg)
+
+    def test_clipboard_text_round_trip(self):
+        import ctypes
+        from ctypes import wintypes
+        self.assertTrue(self.dispatcher._set_clipboard_text("Line 1\nNote : ₹ test"))
+        user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+        user32.GetClipboardData.restype = wintypes.HANDLE
+        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalLock.restype = ctypes.c_wchar_p
+        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        self.assertTrue(user32.OpenClipboard(None))
+        try:
+            h = user32.GetClipboardData(13)
+            text = kernel32.GlobalLock(h)
+            kernel32.GlobalUnlock(h)
+        finally:
+            user32.CloseClipboard()
+        self.assertEqual(text, "Line 1\r\nNote : ₹ test")
 
 
 class TestPlaywrightSharePreview(unittest.TestCase):

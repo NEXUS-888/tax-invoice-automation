@@ -23,7 +23,7 @@ ANANYA ENTERPRISES - INVOICE AUTOMATION & WHATSAPP DISPATCHER
 ===============================================================
 
 Standalone Windows Distribution
-Version: 1.0.9
+Version: 1.1.0
 
 --- QUICK START GUIDE ---
 
@@ -70,6 +70,17 @@ def clean_previous_builds():
                 print(f"  Removed: {path}")
             except Exception as e:
                 print(f"  Warning removing {path}: {e}")
+
+
+def build_share_helper():
+    """Compiles tools/share_invoice/ShareInvoice.exe (Windows Share helper) with the .NET Framework 4 csc."""
+    print("\n[1b] Building Windows Share helper (ShareInvoice.exe)...")
+    script = os.path.join(BASE_DIR, "tools", "share_invoice", "build.cmd")
+    result = subprocess.run(["cmd", "/c", script], cwd=BASE_DIR)
+    exe = os.path.join(BASE_DIR, "tools", "share_invoice", "ShareInvoice.exe")
+    if result.returncode != 0 or not os.path.exists(exe):
+        raise RuntimeError("Building ShareInvoice.exe failed")
+    print(f"  Built {exe}")
 
 
 def run_pyinstaller():
@@ -164,6 +175,7 @@ def main():
     print(" Building Standalone Ananya Invoice Automation (.exe)")
     print("======================================================")
     clean_previous_builds()
+    build_share_helper()
     run_pyinstaller()
     setup_distribution_folder()
     package_zip()

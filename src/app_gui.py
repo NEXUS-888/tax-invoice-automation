@@ -2024,7 +2024,7 @@ class InvoiceAutomationApp(QMainWindow):
             menu.addSeparator()
 
         act_picker_app = menu.addAction("📱 Open WhatsApp App (Select Contact)...")
-        act_picker_app.setToolTip("Opens WhatsApp's contact list; pick the contact and the PDF + message are added automatically")
+        act_picker_app.setToolTip("Opens Windows Share with the PDF and message: click WhatsApp, pick the contact, press Send")
         act_picker_app.triggered.connect(
             lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
             self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="desktop")
@@ -2086,6 +2086,8 @@ class InvoiceAutomationApp(QMainWindow):
             self.wa_worker.queue_share_preview(item)
             return
 
+        if target in ("desktop", "app") and not phone:
+            item['route'] = 'windows_share'
         success, msg, pending = self.wa_dispatcher.share_invoice_to_whatsapp(
             agency_name=agency_name,
             phone=phone,
@@ -2097,8 +2099,8 @@ class InvoiceAutomationApp(QMainWindow):
         )
         self.log(msg)
 
-        if pending and not phone:
-            self._set_share_status(row_idx, "👆 Pick the contact in WhatsApp...", "#eab308")
+        if pending and item.get('route') == 'windows_share':
+            self._set_share_status(row_idx, "📤 Choose WhatsApp in Windows Share...", "#eab308")
         elif pending:
             self._set_share_status(row_idx, "⏳ Attaching in WhatsApp App...", "#eab308")
         elif success:
@@ -2154,6 +2156,19 @@ class InvoiceAutomationApp(QMainWindow):
         row_idx = item.get('row_idx')
         via_web = item.get('route') == 'web_session'
         badge = "Web" if via_web else "App"
+
+        if item.get('route') == 'windows_share':
+            if attached:
+                self._set_share_status(row_idx, "✅ Shared to WhatsApp — pick contact & Send", "#22c55e")
+                self.log(f"✅ {agency_name}: {msg}")
+            elif msg == "Share was cancelled.":
+                self._set_share_status(row_idx, "Share cancelled", "#94a3b8")
+                self.log(f"{agency_name}: {msg}")
+            else:
+                self._set_share_status(row_idx, "📋 PDF ready to drop", "#38bdf8")
+                self.log(f"⚠️ {agency_name}: {msg}")
+                self._show_share_hint(msg)
+            return
 
         if attached:
             self._set_share_status(row_idx, f"✅ PDF Attached [{badge}] — press Send", "#22c55e")

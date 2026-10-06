@@ -10,6 +10,8 @@ playwright_datas = collect_data_files('playwright')
 
 datas = playwright_datas + [
     ('Ananya Bill.xlsm', '.'),
+    # Windows Share helper (built by build_exe.py from tools/share_invoice/ShareInvoice.cs)
+    ('tools/share_invoice/ShareInvoice.exe', 'tools/share_invoice'),
 ]
 
 hiddenimports = [

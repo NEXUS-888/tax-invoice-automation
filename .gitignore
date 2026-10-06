@@ -33,3 +33,6 @@ wa_debug_*.png
 .env
 .venv/
 env/
+
+# Built by build_exe.py from tools/share_invoice/ShareInvoice.cs
+tools/share_invoice/ShareInvoice.exe

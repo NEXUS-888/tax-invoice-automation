@@ -25,6 +25,12 @@ WHATSAPP_EXE_PREFIX = "whatsapp"
 _DESKTOP_LOCK = threading.Lock()
 
 
+def share_helper_path():
+    """ShareInvoice.exe (Windows Share helper): bundled under _MEIPASS when frozen, else in the repo's tools/."""
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "tools", "share_invoice", "ShareInvoice.exe")
+
+
 class WhatsAppDispatcher:
     """
     Interactive "Share App" dispatcher (used when no Playwright session is connected).
@@ -310,6 +316,115 @@ class WhatsAppDispatcher:
         t.start()
         return t
 
+    # ── Windows Share (user picks WhatsApp and the contact) ──────
+
+    def _set_clipboard_text(self, text):
+        """Puts plain text on the Windows clipboard (CF_UNICODETEXT). Safe from any thread."""
+        if sys.platform != "win32":
+            return False
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+            kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+            kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+            kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+            kernel32.GlobalLock.restype = wintypes.LPVOID
+            kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+            kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+            user32.OpenClipboard.argtypes = [wintypes.HWND]
+            user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+            user32.SetClipboardData.restype = wintypes.HANDLE
+
+            data = (text.replace("\r\n", "\n").replace("\n", "\r\n") + "\0").encode("utf-16le")
+            h = kernel32.GlobalAlloc(0x0042, len(data))  # GHND
+            ptr = kernel32.GlobalLock(h) if h else None
+            if not ptr:
+                if h:
+                    kernel32.GlobalFree(h)
+                return False
+            ctypes.memmove(ptr, data, len(data))
+            kernel32.GlobalUnlock(h)
+            for _ in range(5):
+                if user32.OpenClipboard(None):
+                    try:
+                        user32.EmptyClipboard()
+                        if user32.SetClipboardData(13, h):  # CF_UNICODETEXT; clipboard now owns h
+                            return True
+                    finally:
+                        user32.CloseClipboard()
+                    break
+                time.sleep(0.05)
+            kernel32.GlobalFree(h)
+        except Exception:
+            pass
+        return False
+
+    def share_with_windows(self, abs_pdf, message, title, on_complete=None):
+        """
+        Opens the Windows Share window (ShareInvoice.exe) with the PDF and the invoice message. The user
+        clicks WhatsApp, picks the contact and presses Send — Windows hands the file to WhatsApp, so
+        nothing inside WhatsApp is automated. The message is also put on the clipboard in case the
+        target app drops shared text. on_complete(shared, message) fires from a worker thread.
+        Returns (started, message).
+        """
+        exe = share_helper_path()
+        if sys.platform != "win32" or not os.path.exists(exe):
+            return False, "The Windows Share helper (ShareInvoice.exe) is missing."
+
+        import tempfile
+        fd, msg_file = tempfile.mkstemp(prefix="invoice_message_", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(message)
+        self._set_clipboard_text(message)
+
+        try:
+            proc = subprocess.Popen([exe, abs_pdf, msg_file, title], stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError as e:
+            os.remove(msg_file)
+            return False, f"Could not start Windows Share: {e}"
+        try:
+            import ctypes
+            # We are the foreground app (the user just clicked), so let the helper come to the front:
+            # Windows only shows the Share window for the foreground window.
+            ctypes.windll.user32.AllowSetForegroundWindow(proc.pid)
+        except Exception:
+            pass
+
+        def worker():
+            try:
+                out, _ = proc.communicate(timeout=360)
+                outcome = (out or b"").decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
+                outcome = outcome[0]
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                outcome = "CANCELLED"
+            except Exception as e:
+                outcome = f"ERROR:{e}"
+            finally:
+                try:
+                    os.remove(msg_file)
+                except OSError:
+                    pass
+
+            if outcome.startswith("TARGET:"):
+                app = outcome[len("TARGET:"):].strip() or "the app"
+                ok, msg = True, (f"Shared to {app} — pick the contact and press Send. If the message is "
+                                 f"not filled in, press Ctrl+V in the caption (it is on the clipboard).")
+            elif outcome.startswith("ERROR:"):
+                ok, msg = False, self.run_fallback(abs_pdf, reason=f"Windows Share failed ({outcome[6:]}).")
+            else:
+                ok, msg = False, "Share was cancelled."
+            if on_complete:
+                try:
+                    on_complete(ok, msg)
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True, name="windows-share").start()
+        return True, "Windows Share is open — click WhatsApp, pick the contact and press Send."
+
     # ── Entry point ──────────────────────────────────────────────
 
     def _open_url(self, url):
@@ -347,14 +462,19 @@ class WhatsAppDispatcher:
         target_mode = (target or self.mode or "app").lower()
         target_desc = f"{agency_name} ({clean_phone})" if clean_phone else agency_name
 
+        if target_mode in ("app", "desktop") and has_pdf and not clean_phone:
+            # "Select Contact": Windows Share hands the PDF to WhatsApp, the user picks the contact.
+            started, msg = self.share_with_windows(abs_pdf, message, f"Invoice {invoice_no}".strip(),
+                                                   on_complete=on_complete)
+            if started:
+                return True, msg, True
+            return False, self.run_fallback(abs_pdf, reason=msg), False
+
         if target_mode in ("app", "desktop") and has_pdf:
             # No whatsapp:// link here: in the 2025+ app it opens a "Send to" picker and the
             # text ends up sent separately from the PDF.
-            self.attach_in_background(clean_phone or None, message, abs_pdf, on_complete=on_complete)
-            if clean_phone:
-                return True, f"Opening {target_desc} in WhatsApp Desktop and attaching the PDF...", True
-            return True, ("WhatsApp Desktop is opening — pick the contact there and the PDF and "
-                          "message will be added automatically."), True
+            self.attach_in_background(clean_phone, message, abs_pdf, on_complete=on_complete)
+            return True, f"Opening {target_desc} in WhatsApp Desktop and attaching the PDF...", True
 
         if target_mode in ("app", "desktop"):
             if has_pdf:
