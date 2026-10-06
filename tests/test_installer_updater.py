@@ -102,6 +102,27 @@ class TestInstallerUpdater(unittest.TestCase):
         # 4. New asset was added
         self.assertTrue(os.path.exists(os.path.join(self.target_dir, "new_asset.dll")))
 
+    def test_update_overwrites_readonly_dlls(self):
+        import stat
+        os.makedirs(self.target_dir, exist_ok=True)
+        readonly_dll = os.path.join(self.target_dir, "new_asset.dll")
+        with open(readonly_dll, "w") as f:
+            f.write("old-readonly-dll")
+        # Mark as read-only (which normally causes PermissionError on Windows)
+        os.chmod(readonly_dll, stat.S_IREAD)
+
+        # Installation should safely overcome read-only attribute and overwrite
+        exe_path = perform_installation(
+            zip_path=self.zip_file,
+            target_dir=self.target_dir,
+            create_desktop=False,
+            create_start=False
+        )
+
+        with open(readonly_dll, "r") as f:
+            self.assertEqual(f.read(), "new-dll-content")
+
 
 if __name__ == "__main__":
     unittest.main()
+

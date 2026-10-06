@@ -27,6 +27,7 @@ dist/
 *.png
 !data/signature*.png
 wa_debug_*.png
+*.log
 
 # Environment files
 .env

@@ -20,7 +20,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 APP_NAME = "Ananya Invoice Automation"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 PUBLISHER = "Ananya Enterprises"
 EXE_NAME = "AnanyaInvoiceAutomation.exe"
 ZIP_FILENAME = "Ananya_Invoice_Automation_Windows.zip"
@@ -55,33 +55,125 @@ def find_zip_package():
     return None
 
 
-def is_app_running(exe_name=EXE_NAME):
-    """Checks if the application executable is currently running."""
+def is_app_running(target_dir=None, exe_name=EXE_NAME):
+    """Checks if the application executable or any process in target_dir is currently running."""
     if os.name != "nt":
         return False
+
+    # 1. Check using CSV format to prevent table column truncation of long names (>25 chars)
     try:
-        output = subprocess.check_output(
-            f'tasklist /FI "IMAGENAME eq {exe_name}" /NH',
+        output_csv = subprocess.check_output(
+            f'tasklist /FI "IMAGENAME eq {exe_name}" /FO CSV /NH',
             shell=True, stderr=subprocess.DEVNULL
         ).decode(errors="ignore")
-        return exe_name.lower() in output.lower()
+        if exe_name.lower() in output_csv.lower():
+            return True
     except Exception:
-        return False
+        pass
+
+    # 2. Check prefix in standard tasklist as fallback
+    try:
+        output_raw = subprocess.check_output(
+            'tasklist /NH', shell=True, stderr=subprocess.DEVNULL
+        ).decode(errors="ignore")
+        prefix = exe_name[:20].lower()
+        if prefix in output_raw.lower():
+            return True
+    except Exception:
+        pass
+
+    # 3. If target_dir is provided, check if ANY process is running from that directory
+    if target_dir and os.path.exists(target_dir):
+        try:
+            norm_dir = os.path.normpath(target_dir).replace("'", "''")
+            ps_cmd = f"(Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -like '{norm_dir}*' }}).Count"
+            res = subprocess.check_output(["powershell", "-NoProfile", "-Command", ps_cmd], text=True, stderr=subprocess.DEVNULL).strip()
+            if res.isdigit() and int(res) > 0:
+                return True
+        except Exception:
+            pass
+
+    return False
 
 
-def close_running_app(exe_name=EXE_NAME):
-    """Terminates the running application process cleanly."""
+def close_running_app(target_dir=None, exe_name=EXE_NAME):
+    """Terminates the running application process and any child processes in target_dir cleanly."""
     if os.name != "nt":
         return True
+
+    # 1. Kill by image name pattern (including truncated name)
+    patterns = [exe_name, "AnanyaInvoiceAutomation*"]
+    for pat in patterns:
+        try:
+            subprocess.run(
+                f'taskkill /F /IM "{pat}" /T',
+                shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        except Exception:
+            pass
+
+    # 2. Kill any processes running from target_dir via PowerShell
+    if target_dir and os.path.exists(target_dir):
+        try:
+            norm_dir = os.path.normpath(target_dir).replace("'", "''")
+            ps_cmd = f"Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -like '{norm_dir}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    # 3. Wait for process handles to release (up to 3 seconds)
+    for _ in range(10):
+        if not is_app_running(target_dir, exe_name):
+            return True
+        time.sleep(0.3)
+
+    return not is_app_running(target_dir, exe_name)
+
+
+def safe_write_file(src_stream, dest_path, max_retries=4):
+    """
+    Safely writes data from src_stream to dest_path with retry, attribute reset,
+    and locked DLL renaming fallback (the standard Windows installer strategy).
+    """
+    import stat
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+    # If file exists, ensure write permissions (clear read-only flag)
+    if os.path.exists(dest_path):
+        try:
+            os.chmod(dest_path, stat.S_IWRITE | stat.S_IREAD)
+        except Exception:
+            pass
+
+    # Read data from source stream
+    data = src_stream.read()
+
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            with open(dest_path, "wb") as dst:
+                dst.write(data)
+            return True
+        except PermissionError as e:
+            last_err = e
+            time.sleep(0.4)
+            # Try clearing attributes again
+            try:
+                os.chmod(dest_path, stat.S_IWRITE)
+            except Exception:
+                pass
+
+    # If direct write still failed due to file lock:
+    # Use Windows rename trick: rename locked file to .old.<timestamp>, then write new file!
     try:
-        subprocess.run(
-            f'taskkill /F /IM "{exe_name}" /T',
-            shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        time.sleep(1.0)
-        return not is_app_running(exe_name)
-    except Exception:
-        return False
+        old_temp_path = f"{dest_path}.old.{int(time.time()*1000)}"
+        if os.path.exists(dest_path):
+            os.replace(dest_path, old_temp_path)
+        with open(dest_path, "wb") as dst:
+            dst.write(data)
+        return True
+    except Exception as e2:
+        raise PermissionError(f"Failed to write '{dest_path}' after retries and rename fallback: {last_err or e2}")
 
 
 def check_existing_installation(target_dir):
@@ -147,6 +239,9 @@ def perform_installation(zip_path, target_dir, create_desktop=True, create_start
     os.makedirs(os.path.join(target_dir, "data"), exist_ok=True)
     os.makedirs(os.path.join(target_dir, "output"), exist_ok=True)
 
+    # Ensure any lingering processes in target_dir are cleanly closed before overwriting binaries
+    close_running_app(target_dir)
+
     with zipfile.ZipFile(zip_path, "r") as zf:
         members = zf.infolist()
         total_files = len(members)
@@ -179,12 +274,24 @@ def perform_installation(zip_path, target_dir, create_desktop=True, create_start
 
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
-            with zf.open(member) as src, open(dest_path, "wb") as dst:
-                shutil.copyfileobj(src, dst)
+            with zf.open(member) as src:
+                safe_write_file(src, dest_path)
 
             if progress_callback:
                 progress = int(((idx + 1) / total_files) * 85)
                 progress_callback(progress, f"Updating {os.path.basename(rel_path)}...")
+
+    # Clean up any temporary .old.* files left over from in-use renames
+    try:
+        for root, dirs, files in os.walk(target_dir):
+            for f in files:
+                if ".old." in f:
+                    try:
+                        os.remove(os.path.join(root, f))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
 
     # Write or update version metadata
     version_info = {
@@ -407,7 +514,7 @@ class SetupWizard(tk.Tk):
             return
 
         # Check if the app is currently running and needs to be closed
-        if is_app_running():
+        if is_app_running(target_dir):
             ans = messagebox.askyesno(
                 "Application is Running",
                 f"{APP_NAME} is currently running.\n\n"
@@ -418,11 +525,11 @@ class SetupWizard(tk.Tk):
             if not ans:
                 return
 
-            closed = close_running_app()
-            if not closed and is_app_running():
+            closed = close_running_app(target_dir)
+            if not closed and is_app_running(target_dir):
                 messagebox.showerror(
                     "Cannot Close Application",
-                    f"Please close {APP_NAME} manually from your taskbar or Task Manager, then click '{self.install_btn.cget('text')} again."
+                    f"Please close {APP_NAME} manually from your taskbar or Task Manager, then click '{self.install_btn.cget('text')}' again."
                 )
                 return
 
