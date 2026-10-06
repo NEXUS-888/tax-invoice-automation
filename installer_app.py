@@ -20,7 +20,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 APP_NAME = "Ananya Invoice Automation"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 PUBLISHER = "Ananya Enterprises"
 EXE_NAME = "AnanyaInvoiceAutomation.exe"
 ZIP_FILENAME = "Ananya_Invoice_Automation_Windows.zip"

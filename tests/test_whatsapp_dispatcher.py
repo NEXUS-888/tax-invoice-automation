@@ -3,6 +3,7 @@ import sys
 import unittest
 import tempfile
 import threading
+import time
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
@@ -150,200 +151,74 @@ class TestFallback(unittest.TestCase):
 
 
 class TestDesktopAttach(unittest.TestCase):
-    RECT = (100, 100, 1300, 1000)
-
     def setUp(self):
         self.dispatcher = WhatsAppDispatcher()
         self.pdf = _make_pdf()
-        sleep = patch("whatsapp_dispatcher.time.sleep")
-        sleep.start()
-        self.addCleanup(sleep.stop)
 
     def tearDown(self):
         os.remove(self.pdf)
 
-    def _patch(self, **kw):
-        mocks = {}
-        for name, value in kw.items():
-            p = patch.object(WhatsAppDispatcher, name, return_value=value)
-            mocks[name] = p.start()
-            self.addCleanup(p.stop)
-        return mocks
-
-    # ── attach_via_desktop orchestration ──
-
-    def _patch_flow(self, paste_results):
-        m = self._patch(wait_for_onscreen_window=(1234, self.RECT), wait_until_stable=None,
-                        window_on_screen_rect=self.RECT, copy_pdf_to_clipboard=True)
-        p = patch.object(WhatsAppDispatcher, "paste_and_verify", side_effect=list(paste_results))
-        m["paste_and_verify"] = p.start()
-        self.addCleanup(p.stop)
-        return m
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_preview_detected_is_success(self):
-        m = self._patch_flow(["attached"])
-        ok, msg = self.dispatcher.attach_via_desktop(self.pdf, was_running=True)
-        self.assertTrue(ok)
-        self.assertIn("attached", msg)
-        m["paste_and_verify"].assert_called_once_with(1234, self.RECT)
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_nothing_happened_retries_once_then_fails(self):
-        m = self._patch_flow(["nothing", "nothing"])
-        ok, msg = self.dispatcher.attach_via_desktop(self.pdf, was_running=True)
-        self.assertFalse(ok)
-        self.assertEqual(m["paste_and_verify"].call_count, 2)
-        self.assertEqual(m["copy_pdf_to_clipboard"].call_count, 2)
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_retry_succeeds_on_second_paste(self):
-        self._patch_flow(["nothing", "attached"])
-        ok, _ = self.dispatcher.attach_via_desktop(self.pdf, was_running=False)
-        self.assertTrue(ok)
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_hard_error_is_not_retried(self):
-        m = self._patch_flow(["Another window is covering WhatsApp."])
-        ok, msg = self.dispatcher.attach_via_desktop(self.pdf, was_running=True)
-        self.assertFalse(ok)
-        self.assertIn("covering", msg)
-        m["paste_and_verify"].assert_called_once()
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_window_never_on_screen(self):
-        m = self._patch(wait_for_onscreen_window=(None, None), paste_and_verify="attached")
-        ok, msg = self.dispatcher.attach_via_desktop(self.pdf)
-        self.assertFalse(ok)
-        self.assertIn("did not appear", msg)
-        m["paste_and_verify"].assert_not_called()
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_cold_start_waits_longer(self):
-        m = self._patch_flow(["attached"])
-        self.dispatcher.attach_via_desktop(self.pdf, was_running=False)
-        cold = m["wait_until_stable"].call_args.kwargs
-        self.assertGreaterEqual(cold["min_wait"], 4.0)
-
-    # ── paste_and_verify ──
-
-    def _sig(self, value):
-        return bytes([value, value, value, 255]) * (WhatsAppDispatcher.SAMPLE ** 2)
-
-    def test_paste_clicks_message_box_then_detects_preview(self):
-        m = self._patch(composer_point=(800, 950), window_owns_point=True, click_at=True,
-                        window_on_screen_rect=self.RECT, send_ctrl_v=True)
-        with patch.object(WhatsAppDispatcher, "capture_signature",
-                          side_effect=[self._sig(20), self._sig(200)]):
-            self.assertEqual(self.dispatcher.paste_and_verify(1234, self.RECT), "attached")
-        m["click_at"].assert_called_once_with(800, 950)
-        m["send_ctrl_v"].assert_called_once()
-
-    def test_paste_with_no_screen_change_reports_nothing(self):
-        self._patch(composer_point=(800, 950), window_owns_point=True, click_at=True,
-                    window_on_screen_rect=self.RECT, send_ctrl_v=True)
-        with patch.object(WhatsAppDispatcher, "capture_signature", return_value=self._sig(20)):
-            self.assertEqual(self.dispatcher.paste_and_verify(1234, self.RECT, timeout=1.0), "nothing")
-
-    def test_unreadable_screen_is_unverified_not_failure(self):
-        self._patch(composer_point=(800, 950), window_owns_point=True, click_at=True,
-                    window_on_screen_rect=self.RECT, send_ctrl_v=True, capture_signature=None)
-        self.assertEqual(self.dispatcher.paste_and_verify(1234, self.RECT, timeout=1.0), "unverified")
-
-    def test_covered_window_is_never_clicked(self):
-        m = self._patch(composer_point=(800, 950), window_owns_point=False, force_foreground=False,
-                        click_at=True, send_ctrl_v=True)
-        result = self.dispatcher.paste_and_verify(1234, self.RECT)
-        self.assertIn("covering", result)
-        m["click_at"].assert_not_called()
-        m["send_ctrl_v"].assert_not_called()
-
-    def test_window_hidden_after_click_does_not_paste(self):
-        m = self._patch(composer_point=(800, 950), window_owns_point=True, click_at=True,
-                        window_on_screen_rect=None, send_ctrl_v=True)
-        self.assertIn("hidden", self.dispatcher.paste_and_verify(1234, self.RECT))
-        m["send_ctrl_v"].assert_not_called()
-
-    def test_blocked_keystroke_reported(self):
-        self._patch(composer_point=(800, 950), window_owns_point=True, click_at=True,
-                    window_on_screen_rect=self.RECT, send_ctrl_v=False, capture_signature=self._sig(1))
-        self.assertIn("blocked", self.dispatcher.paste_and_verify(1234, self.RECT))
-
-    # ── geometry / window state ──
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_composer_point_is_inside_message_box(self):
-        with patch("ctypes.windll.user32.GetDpiForWindow", return_value=144, create=True):
-            x, y = self.dispatcher.composer_point(1234, (0, 0, 1200, 900))
-        self.assertEqual((x, y), (900, 840))  # 75% across, 40 logical px (60 physical @150%) from bottom
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_composer_point_default_dpi(self):
-        with patch("ctypes.windll.user32.GetDpiForWindow", return_value=0, create=True):
-            x, y = self.dispatcher.composer_point(1234, (100, 50, 900, 650))
-        self.assertEqual((x, y), (700, 610))
-
-    def test_changed_fraction(self):
-        a, b = self._sig(10), self._sig(10)
-        self.assertEqual(WhatsAppDispatcher.changed_fraction(a, b), 0.0)
-        self.assertEqual(WhatsAppDispatcher.changed_fraction(a, self._sig(200)), 1.0)
-        half = self._sig(10)[: len(a) // 2] + self._sig(200)[len(a) // 2:]
-        self.assertAlmostEqual(WhatsAppDispatcher.changed_fraction(a, half), 0.5)
-        self.assertEqual(WhatsAppDispatcher.changed_fraction(None, a), 0.0)
-
-    def test_wait_for_window_ignores_offscreen_and_reactivates(self):
-        """A WhatsApp window parked at -32000 must not count; WhatsApp is re-activated via its URL."""
-        self._patch(find_whatsapp_desktop_windows=[(1234, "WhatsApp", "whatsapp.root.exe")],
-                    window_on_screen_rect=None)
-        opened = self._patch(_open_url=True)["_open_url"]
-        clock = iter(range(0, 100))
-        with patch("whatsapp_dispatcher.time.time", side_effect=lambda: next(clock)):
-            self.assertEqual(self.dispatcher.wait_for_onscreen_window(timeout=10), (None, None))
-        opened.assert_called_once_with("whatsapp://")
-
-    def test_wait_for_window_returns_largest_onscreen(self):
-        self._patch(find_whatsapp_desktop_windows=[(1, "WhatsApp", "whatsapp.exe"), (2, "WhatsApp", "whatsapp.exe")])
-        rects = {1: (0, 0, 400, 400), 2: (0, 0, 1200, 900)}
-        with patch.object(WhatsAppDispatcher, "window_on_screen_rect", side_effect=lambda h: rects[h]):
-            self.assertEqual(self.dispatcher.wait_for_onscreen_window(timeout=5), (2, rects[2]))
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_window_on_screen_rect_rejects_invalid(self):
-        self.assertIsNone(self.dispatcher.window_on_screen_rect(0))
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_capture_signature_real_gdi(self):
-        sig = self.dispatcher.capture_signature((0, 0, 200, 200))
-        self.assertIsNotNone(sig)
-        self.assertEqual(len(sig), WhatsAppDispatcher.SAMPLE ** 2 * 4)
-
-    # ── background thread ──
-
-    @patch.object(WhatsAppDispatcher, "run_fallback", return_value="fallback hint")
-    @patch.object(WhatsAppDispatcher, "attach_via_desktop", return_value=(False, "nope"))
-    def test_background_failure_runs_fallback_and_reports(self, _attach, mock_fallback):
+    def _run(self, bridge):
         done = []
-        t = self.dispatcher.auto_attach_pdf_in_background(self.pdf, on_complete=lambda ok, m: done.append((ok, m)))
-        t.join(5)
-        self.assertEqual(done, [(False, "fallback hint")])
-        mock_fallback.assert_called_once()
+        with patch("whatsapp_dispatcher.WhatsAppDesktopBridge", return_value=bridge):
+            t = self.dispatcher.attach_in_background("919876543210", "msg", self.pdf,
+                                                     on_complete=lambda ok, m: done.append((ok, m)))
+            t.join(5)
+        return done
 
     @patch.object(WhatsAppDispatcher, "run_fallback")
-    @patch.object(WhatsAppDispatcher, "attach_via_desktop", return_value=(True, "pasted"))
-    def test_background_success_skips_fallback(self, _attach, mock_fallback):
-        done = []
-        t = self.dispatcher.auto_attach_pdf_in_background(self.pdf, on_complete=lambda ok, m: done.append((ok, m)))
-        t.join(5)
-        self.assertEqual(done, [(True, "pasted")])
+    def test_success_attaches_inside_whatsapp(self, mock_fallback):
+        bridge = MagicMock()
+        bridge.enable.return_value = (True, "connected")
+        bridge.attach_invoice.return_value = (True, "PDF attached")
+        self.assertEqual(self._run(bridge), [(True, "PDF attached")])
+        bridge.attach_invoice.assert_called_once_with("919876543210", "msg", self.pdf)
         mock_fallback.assert_not_called()
 
     @patch.object(WhatsAppDispatcher, "run_fallback", return_value="fallback hint")
-    @patch.object(WhatsAppDispatcher, "attach_via_desktop", side_effect=RuntimeError("boom"))
-    def test_background_exception_never_escapes(self, _attach, _fallback):
-        done = []
-        t = self.dispatcher.auto_attach_pdf_in_background(self.pdf, on_complete=lambda ok, m: done.append(ok))
-        t.join(5)
-        self.assertEqual(done, [False])
+    def test_connect_failure_skips_attach_and_falls_back(self, mock_fallback):
+        bridge = MagicMock()
+        bridge.enable.return_value = (False, "not installed")
+        self.assertEqual(self._run(bridge), [(False, "fallback hint")])
+        bridge.attach_invoice.assert_not_called()
+        self.assertIn("not installed", mock_fallback.call_args.kwargs["reason"])
+
+    @patch.object(WhatsAppDispatcher, "run_fallback", return_value="fallback hint")
+    def test_attach_failure_falls_back(self, mock_fallback):
+        bridge = MagicMock()
+        bridge.enable.return_value = (True, "connected")
+        bridge.attach_invoice.return_value = (False, "chat did not open")
+        self.assertEqual(self._run(bridge), [(False, "fallback hint")])
+
+    @patch.object(WhatsAppDispatcher, "run_fallback", return_value="fallback hint")
+    def test_exception_never_escapes_thread(self, _fallback):
+        bridge = MagicMock()
+        bridge.enable.side_effect = RuntimeError("boom")
+        self.assertEqual(self._run(bridge), [(False, "fallback hint")])
+
+    @patch.object(WhatsAppDispatcher, "run_fallback")
+    def test_shares_run_one_at_a_time(self, _fallback):
+        active, peak = [0], [0]
+        lock = threading.Lock()
+
+        def slow_attach(*_):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            time.sleep(0.2)
+            with lock:
+                active[0] -= 1
+            return True, "ok"
+
+        bridge = MagicMock()
+        bridge.enable.return_value = (True, "connected")
+        bridge.attach_invoice.side_effect = slow_attach
+        with patch("whatsapp_dispatcher.WhatsAppDesktopBridge", return_value=bridge):
+            threads = [self.dispatcher.attach_in_background("919876543210", "m", self.pdf) for _ in range(3)]
+            for t in threads:
+                t.join(5)
+        self.assertEqual(peak[0], 1)
+        self.assertEqual(bridge.attach_invoice.call_count, 3)
 
     def test_find_windows_excludes_non_whatsapp_processes(self):
         """This test process (python.exe) owns no WhatsApp windows, so nothing of ours may match."""
@@ -377,23 +252,24 @@ class TestShareEntryPoint(unittest.TestCase):
     def tearDown(self):
         os.remove(self.pdf)
 
-    @patch.object(WhatsAppDispatcher, "auto_attach_pdf_in_background")
+    @patch.object(WhatsAppDispatcher, "attach_in_background")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
-    def test_desktop_with_phone_starts_background_attach(self, mock_open, mock_bg, _wb, _popen):
+    def test_desktop_with_phone_attaches_without_whatsapp_link(self, mock_open, mock_bg, _wb, _popen):
         cb = MagicMock()
         ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
             "ACME FUELS", "9876543210", "105", "SEP 2026", self.pdf, target="desktop", on_complete=cb)
         self.assertTrue(ok)
         self.assertTrue(pending)
-        url = mock_open.call_args[0][0]
-        self.assertTrue(url.startswith("whatsapp://send?phone=919876543210&text="))
-        self.assertIn("Note%20%3A%20please%20complete%20the%20payment", url)
-        mock_bg.assert_called_once()
-        self.assertEqual(mock_bg.call_args[0][0], os.path.abspath(self.pdf))
+        # A whatsapp:// link would open the "Send to" picker and send the text separately (twice).
+        mock_open.assert_not_called()
+        phone, message, pdf = mock_bg.call_args[0]
+        self.assertEqual(phone, "919876543210")
+        self.assertIn(REMINDER, message)
+        self.assertEqual(pdf, os.path.abspath(self.pdf))
         self.assertIs(mock_bg.call_args.kwargs["on_complete"], cb)
         self.assertNotIn("attached", msg.lower().replace("attaching", ""))  # never claims success up front
 
-    @patch.object(WhatsAppDispatcher, "auto_attach_pdf_in_background")
+    @patch.object(WhatsAppDispatcher, "attach_in_background")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
     def test_invalid_number_refuses_instead_of_opening_picker(self, mock_open, mock_bg, _wb, _popen):
         ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
@@ -404,7 +280,7 @@ class TestShareEntryPoint(unittest.TestCase):
         mock_open.assert_not_called()
         mock_bg.assert_not_called()
 
-    @patch.object(WhatsAppDispatcher, "auto_attach_pdf_in_background")
+    @patch.object(WhatsAppDispatcher, "attach_in_background")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
     def test_desktop_without_phone_does_not_paste_blind(self, _open, mock_bg, _wb, _popen):
         ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
@@ -413,18 +289,6 @@ class TestShareEntryPoint(unittest.TestCase):
         self.assertFalse(pending)
         mock_bg.assert_not_called()
         self.assertIn("Ctrl+V", msg)
-
-    @patch.object(WhatsAppDispatcher, "run_fallback", return_value="hint")
-    @patch.object(WhatsAppDispatcher, "auto_attach_pdf_in_background")
-    @patch.object(WhatsAppDispatcher, "_open_url", side_effect=[False, True])
-    def test_desktop_not_installed_falls_back_to_web(self, mock_open, mock_bg, mock_fallback, _wb, _popen):
-        ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
-            "ACME", "9876543210", "1", "M", self.pdf, target="desktop")
-        self.assertTrue(ok)
-        self.assertFalse(pending)
-        self.assertTrue(mock_open.call_args_list[1][0][0].startswith("https://web.whatsapp.com/send"))
-        mock_bg.assert_not_called()
-        mock_fallback.assert_called_once()
 
     @patch.object(WhatsAppDispatcher, "run_fallback", return_value="hint")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
@@ -446,7 +310,7 @@ class TestShareEntryPoint(unittest.TestCase):
 
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
     def test_legacy_alias_returns_pair(self, _open, _wb, _popen):
-        with patch.object(WhatsAppDispatcher, "auto_attach_pdf_in_background"):
+        with patch.object(WhatsAppDispatcher, "attach_in_background"):
             result = self.dispatcher.send_agency_invoice("ACME", "9876543210", "1", "M", self.pdf)
         self.assertEqual(len(result), 2)
 

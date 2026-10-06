@@ -272,6 +272,8 @@ class WhatsAppAutomator:
         """Checks if the document preview overlay/dialog or send button is visible."""
         # 1. Check for any send icon or send button
         send_selectors = [
+            "[role='button'][aria-label^='Send'][aria-label$='selected']",  # "Send 1 selected" (2025+ UI)
+            "[data-testid^='media-caption-input']",
             "[data-testid='send']",
             "span[data-icon='send']",
             "span[data-icon='send-light']",
@@ -380,6 +382,7 @@ class WhatsAppAutomator:
     def _type_caption_in_preview(self, caption_text):
         """Types caption directly into WhatsApp Web's document preview caption box if present."""
         caption_selectors = [
+            "div[contenteditable='true'][data-testid^='media-caption-input']",
             "div[role='dialog'] div[contenteditable='true']",
             "div[contenteditable='true'][data-testid='media-caption-input']",
             "div[contenteditable='true'][aria-placeholder*='caption' i]",
