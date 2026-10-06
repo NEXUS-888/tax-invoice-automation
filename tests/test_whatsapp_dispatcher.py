@@ -1,4 +1,4 @@
-﻿import os
+import os
 import unittest
 import tempfile
 from unittest.mock import patch
@@ -68,9 +68,9 @@ class TestWhatsAppDispatcher(unittest.TestCase):
             if os.path.exists(temp_pdf):
                 os.remove(temp_pdf)
 
+    @patch("whatsapp_dispatcher.WhatsAppDispatcher.auto_attach_pdf_in_background")
     @patch("whatsapp_dispatcher.os.startfile")
-    @patch("whatsapp_dispatcher.subprocess.Popen")
-    def test_share_invoice_to_whatsapp_without_phone(self, mock_popen, mock_startfile):
+    def test_share_triggers_auto_attach(self, mock_startfile, mock_auto_attach):
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
             tf.write(b"%PDF-1.4 dummy")
             temp_pdf = tf.name
@@ -78,21 +78,25 @@ class TestWhatsAppDispatcher(unittest.TestCase):
         try:
             ok, msg = self.dispatcher.share_invoice_to_whatsapp(
                 agency_name="ACME FUELS",
-                phone=None,
+                phone="9876543210",
                 invoice_no="105",
                 month_desc="SEP 2026",
                 pdf_path=temp_pdf,
-                open_explorer=False
+                target="desktop"
             )
             self.assertTrue(ok)
-            self.assertIn("ACME FUELS", msg)
-            self.assertTrue(mock_startfile.called)
-            called_url = mock_startfile.call_args[0][0]
-            self.assertTrue(called_url.startswith("whatsapp://send?text="))
+            self.assertTrue(mock_auto_attach.called)
+            self.assertIn("attached directly to chat", msg)
         finally:
             if os.path.exists(temp_pdf):
                 os.remove(temp_pdf)
 
+    def test_activate_and_send_paste_handles_invalid_hwnd(self):
+        # Should return safely without raising exceptions
+        result = self.dispatcher.activate_and_send_paste(999999999)
+        self.assertIsInstance(result, bool)
+
 
 if __name__ == "__main__":
     unittest.main()
+

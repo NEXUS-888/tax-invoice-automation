@@ -157,8 +157,8 @@ def run_full_verification():
     print(f"  -> Native CF_HDROP FileDropList verified: {copied_files}")
     report["CF_HDROP_Clipboard"] = "PASSED"
 
-    # 7. Verify WhatsApp Message & URL Dispatch
-    print("\n[CHECK 7] Testing WhatsApp Message & URL Formatter...")
+    # 7. Verify WhatsApp Message, URL Dispatch & Auto-Attachment
+    print("\n[CHECK 7] Testing WhatsApp Message, URL Formatter & Auto-Attachment...")
     msg = dispatcher.build_invoice_message(test_agency_name, 1999, "SEPTEMBER 2026")
     assert str(test_agency_name) in msg
     assert "1999" in msg
@@ -167,6 +167,10 @@ def run_full_verification():
     assert formatted_phone == "919876543210", f"Phone formatting failed: {formatted_phone}"
     print(f"  -> Formatted Phone: {formatted_phone}")
     print(f"  -> Invoice Message formatted cleanly ({len(msg)} characters).")
+    
+    # Test auto attachment window detection helper
+    desktop_wins = dispatcher.find_whatsapp_desktop_windows()
+    print(f"  -> Native WhatsApp Desktop windows detected: {len(desktop_wins)}")
     report["WhatsAppDispatch"] = "PASSED"
 
     # 8. Verify Executable Direct Launch & Process Health

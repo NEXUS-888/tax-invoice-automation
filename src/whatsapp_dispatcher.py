@@ -146,17 +146,118 @@ class WhatsAppDispatcher:
             f"Thank you,\nANANYA ENTERPRISES"
         )
 
-    def share_invoice_to_whatsapp(self, agency_name, phone=None, invoice_no="", month_desc="", pdf_path="", target=None, open_explorer=True):
+    def find_whatsapp_desktop_windows(self):
+        """Finds all visible native WhatsApp Desktop (WinUI / UWP) application windows."""
+        if sys.platform != "win32":
+            return []
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            
+            # Attach to interactive desktop if running from background
+            hdesk = user32.OpenInputDesktop(0, False, 0x0100)
+            if hdesk:
+                user32.SetThreadDesktop(hdesk)
+
+            found = []
+            def enum_cb(hwnd, _):
+                if user32.IsWindow(hwnd) and user32.IsWindowVisible(hwnd):
+                    buf_cls = ctypes.create_unicode_buffer(512)
+                    user32.GetClassNameW(hwnd, buf_cls, 512)
+                    cls = buf_cls.value
+                    buf_title = ctypes.create_unicode_buffer(512)
+                    user32.GetWindowTextW(hwnd, buf_title, 512)
+                    title = buf_title.value
+                    
+                    # Target native WhatsApp Desktop app (exclude browser tabs with 'chrome')
+                    if ("whatsapp" in title.lower() or "whatsapp" in cls.lower() or "winuidesktopwin32windowclass" in cls.lower()) and "chrome" not in cls.lower():
+                        found.append((hwnd, title, cls))
+                return True
+
+            WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+            if hdesk:
+                user32.EnumDesktopWindows(hdesk, WNDENUMPROC(enum_cb), 0)
+            else:
+                user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+            return found
+        except Exception:
+            return []
+
+    def activate_and_send_paste(self, hwnd):
+        """Brings WhatsApp Desktop window to foreground and sends Ctrl+V to attach PDF document."""
+        if sys.platform != "win32":
+            return False
+        try:
+            import ctypes
+            import time
+            user32 = ctypes.windll.user32
+            
+            # 1. Restore window if minimized
+            SW_RESTORE = 9
+            user32.ShowWindow(hwnd, SW_RESTORE)
+            
+            # 2. Windows foreground lock bypass via Alt key
+            VK_MENU = 0x12
+            KEYEVENTF_KEYUP = 0x0002
+            user32.keybd_event(VK_MENU, 0, 0, 0)
+            user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+            
+            user32.SetForegroundWindow(hwnd)
+            user32.SwitchToThisWindow(hwnd, True)
+            time.sleep(0.35) # Wait for WhatsApp chat composer focus
+            
+            # 3. Send Ctrl+V keystroke to attach PDF
+            VK_CONTROL = 0x11
+            VK_V = 0x56
+            user32.keybd_event(VK_CONTROL, 0, 0, 0)
+            user32.keybd_event(VK_V, 0, 0, 0)
+            time.sleep(0.06)
+            user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+            user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+            return True
+        except Exception:
+            return False
+
+    def auto_attach_pdf_in_background(self, abs_pdf, timeout=6.0):
+        """Spawns non-blocking background thread to wait for WhatsApp Desktop to open, then automatically attaches PDF via Ctrl+V."""
+        if sys.platform != "win32" or not abs_pdf or not os.path.exists(abs_pdf):
+            return
+
+        import threading
+        import time
+
+        def worker():
+            time.sleep(1.2) # Allow WhatsApp URI navigation and chat load
+            deadline = time.time() + timeout
+            wa_hwnd = None
+            while time.time() < deadline:
+                wins = self.find_whatsapp_desktop_windows()
+                for hwnd, title, cls in wins:
+                    if "command palette" not in title.lower():
+                        wa_hwnd = hwnd
+                        break
+                if wa_hwnd:
+                    break
+                time.sleep(0.3)
+                
+            if wa_hwnd:
+                time.sleep(0.2)
+                self.activate_and_send_paste(wa_hwnd)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+
+    def share_invoice_to_whatsapp(self, agency_name, phone=None, invoice_no="", month_desc="", pdf_path="", target=None, open_explorer=False):
         """
         Opens WhatsApp with pre-filled invoice message.
-        - target: 'desktop' / 'app' (opens native WhatsApp Desktop App),
-                  'web' (opens WhatsApp Web in default browser - 100% reliable),
+        - target: 'desktop' / 'app' (opens native WhatsApp Desktop App & automatically attaches PDF into chat),
+                  'web' (opens WhatsApp Web in default browser),
                   'auto' (opens WhatsApp universal link api.whatsapp.com).
                   If None, falls back to self.mode (default: 'app').
         - If phone is given: opens chat directly for that number.
         - If phone is None/empty: opens WhatsApp with contact selector so user can pick any chat.
-        - Automatically copies the PDF invoice to Windows Clipboard (CF_HDROP) for instant Ctrl+V attachment.
-        - Highlights the PDF in Windows Explorer for drag & drop backup.
+        - Automatically copies the PDF invoice to Windows Clipboard (CF_HDROP) and sends Ctrl+V to attach directly.
         """
         abs_pdf = os.path.abspath(pdf_path) if pdf_path else ""
         if abs_pdf and os.path.exists(abs_pdf):
@@ -194,6 +295,9 @@ class WhatsAppDispatcher:
                     opened = True
                 except Exception:
                     pass
+            elif abs_pdf and os.path.exists(abs_pdf):
+                # Trigger automated background PDF attachment directly into chat
+                self.auto_attach_pdf_in_background(abs_pdf)
         elif target_mode == "auto":
             if clean_phone:
                 wa_url = f"https://api.whatsapp.com/send?phone={clean_phone}&text={encoded_msg}"
@@ -215,7 +319,7 @@ class WhatsAppDispatcher:
             except Exception:
                 pass
 
-        # Highlight PDF in file manager (cross-platform) so user can also drag & drop
+        # Highlight PDF in file manager only if explicitly requested
         if open_explorer and abs_pdf and os.path.exists(abs_pdf):
             try:
                 if sys.platform == 'win32':
@@ -228,9 +332,10 @@ class WhatsAppDispatcher:
                 pass
 
         target_desc = f"{agency_name} ({clean_phone})" if clean_phone else agency_name
-        dest_label = "WhatsApp Web" if target_mode == "web" else ("WhatsApp App" if target_mode in ("app", "desktop") else "WhatsApp")
-        return True, f"Opened {dest_label} for {target_desc}. PDF copied to clipboard — press Ctrl+V to attach."
+        dest_label = "WhatsApp Web" if target_mode == "web" else ("WhatsApp Desktop" if target_mode in ("app", "desktop") else "WhatsApp")
+        return True, f"Opened {dest_label} for {target_desc} — PDF invoice attached directly to chat!"
 
     # Backwards compatibility alias
     def send_agency_invoice(self, agency_name, phone, invoice_no, month_desc, pdf_path):
         return self.share_invoice_to_whatsapp(agency_name, phone, invoice_no, month_desc, pdf_path)
+

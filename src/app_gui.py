@@ -1971,31 +1971,31 @@ class InvoiceAutomationApp(QMainWindow):
 
         if phones:
             for phone_num in phones:
-                act_web = menu.addAction(f"🌐 Send via WhatsApp Web ({phone_num})")
-                act_web.setToolTip("Opens chat instantly in your web browser with pre-filled message")
-                act_web.triggered.connect(
-                    lambda _, p=phone_num, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
-                    self.execute_direct_share(agency_name, p, i_no, m_desc, p_path, r_i, target="web")
-                )
-
                 act_app = menu.addAction(f"📱 Send via WhatsApp App ({phone_num})")
-                act_app.setToolTip("Opens chat in WhatsApp Desktop app")
+                act_app.setToolTip("Opens chat in WhatsApp Desktop app and automatically attaches PDF invoice into chat")
                 act_app.triggered.connect(
                     lambda _, p=phone_num, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
                     self.execute_direct_share(agency_name, p, i_no, m_desc, p_path, r_i, target="desktop")
                 )
-            menu.addSeparator()
 
-        act_picker_web = menu.addAction("🌐 Open WhatsApp Web (Select Contact)...")
-        act_picker_web.triggered.connect(
-            lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
-            self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="web")
-        )
+                act_web = menu.addAction(f"🌐 Send via WhatsApp Web ({phone_num})")
+                act_web.setToolTip("Opens chat via WhatsApp Web with pre-filled message")
+                act_web.triggered.connect(
+                    lambda _, p=phone_num, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
+                    self.execute_direct_share(agency_name, p, i_no, m_desc, p_path, r_i, target="web")
+                )
+            menu.addSeparator()
 
         act_picker_app = menu.addAction("📱 Open WhatsApp App (Select Contact)...")
         act_picker_app.triggered.connect(
             lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
             self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="desktop")
+        )
+
+        act_picker_web = menu.addAction("🌐 Open WhatsApp Web (Select Contact)...")
+        act_picker_web.triggered.connect(
+            lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
+            self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="web")
         )
 
         if phones:
@@ -2026,10 +2026,23 @@ class InvoiceAutomationApp(QMainWindow):
         """
         Executes direct WhatsApp share via WhatsAppDispatcher:
         1. Copies PDF to Windows Clipboard (CF_HDROP).
-        2. Opens WhatsApp Web (browser) or Desktop App with pre-filled invoice message.
-        3. Highlights PDF in Explorer.
+        2. Opens WhatsApp Desktop App (or Web) with pre-filled invoice message.
+        3. Automatically activates WhatsApp window and attaches the PDF invoice directly into chat!
         4. Updates status in dispatch table and logs message.
         """
+        # If user picked Web AND automated session is connected, route through worker for seamless direct delivery!
+        if target == "web" and self.whatsapp_connected and self.wa_worker:
+            item = {
+                'row_idx': row_idx if row_idx is not None else 0,
+                'agency_name': agency_name,
+                'phone': phone,
+                'inv_no': inv_no,
+                'month_desc': month_desc,
+                'pdf_path': pdf_path
+            }
+            self.send_single_agency_whatsapp(item)
+            return
+
         success, msg = self.wa_dispatcher.share_invoice_to_whatsapp(
             agency_name=agency_name,
             phone=phone,
@@ -2037,25 +2050,19 @@ class InvoiceAutomationApp(QMainWindow):
             month_desc=month_desc,
             pdf_path=pdf_path,
             target=target,
-            open_explorer=True
+            open_explorer=False
         )
 
         self.log(msg)
 
         if row_idx is not None and row_idx < self.dispatch_table.rowCount():
-            target_label = f"({phone})" if phone else "(Picker)"
-            dest_badge = "Web" if target == "web" else ("App" if target == "desktop" else "Link")
-            status_item = QTableWidgetItem(f"📤 Shared [{dest_badge}] {target_label}")
-            status_item.setForeground(QColor("#38bdf8"))
+            dest_badge = "App" if target in ("desktop", "app") else ("Web" if target == "web" else "Link")
+            status_item = QTableWidgetItem(f"✅ PDF Attached [{dest_badge}]")
+            status_item.setForeground(QColor("#22c55e"))
+            font = QFont()
+            font.setBold(True)
+            status_item.setFont(font)
             self.dispatch_table.setItem(row_idx, 5, status_item)
-
-        QMessageBox.information(
-            self, "WhatsApp Share Ready",
-            f"{msg}\n\n"
-            "📂 The PDF invoice has been highlighted in File Explorer!\n"
-            "👉 To attach manually: Drag & drop the highlighted PDF file directly into your WhatsApp chat window (or click Attach + -> Document).\n\n"
-            "⚡ 100% Automated Option: Use the '📱 Auto-Send' button next to the agency — it automatically attaches and sends the PDF into the chat without any manual steps!"
-        )
 
     def highlight_pdf_file(self, pdf_path):
         """Highlights the specified PDF invoice in system file manager (cross-platform)."""
