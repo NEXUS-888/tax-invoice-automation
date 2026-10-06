@@ -26,6 +26,10 @@ hiddenimports = [
     'reportlab.lib.styles',
     'openpyxl',
     'openpyxl.reader.excel',
+    'openpyxl.workbook',
+    'openpyxl.worksheet',
+    'openpyxl.styles',
+    'openpyxl.cell',
     'playwright',
     'playwright.sync_api',
     'state_manager',
@@ -34,7 +38,7 @@ hiddenimports = [
     'pdf_generator',
     'whatsapp_automator',
     'whatsapp_dispatcher',
-] + collect_submodules('reportlab') + collect_submodules('openpyxl')
+] + collect_submodules('reportlab')
 
 a = Analysis(
     ['src/app_gui.py'],
@@ -44,8 +48,8 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
-    excludes=['numpy', 'tkinter', 'matplotlib', 'scipy', 'torch', 'transformers'],
+    runtime_hooks=['pyinstaller_runtime_hook.py'],
+    excludes=['numpy', 'pandas', 'scipy', 'matplotlib', 'tkinter', 'torch', 'transformers', 'IPython', 'pytest'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

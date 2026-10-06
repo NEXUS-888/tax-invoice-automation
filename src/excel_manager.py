@@ -1,24 +1,7 @@
-# NumPy 2.x compatibility fix for libraries (such as openpyxl) referencing deprecated aliases
-try:
-    import numpy as _np
-    _compat_aliases = {
-        'short': getattr(_np, 'int16', int),
-        'ushort': getattr(_np, 'uint16', int),
-        'int_': getattr(_np, 'intp', int),
-        'uint': getattr(_np, 'uintp', int),
-        'longlong': getattr(_np, 'int64', int),
-        'ulonglong': getattr(_np, 'uint64', int),
-        'half': getattr(_np, 'float16', float),
-        'single': getattr(_np, 'float32', float),
-        'double': getattr(_np, 'float64', float),
-        'longdouble': getattr(_np, 'longdouble', getattr(_np, 'float64', float)),
-        'bool_': getattr(_np, 'bool', bool),
-    }
-    for _name, _typ in _compat_aliases.items():
-        if not hasattr(_np, _name):
-            setattr(_np, _name, _typ)
-except ImportError:
-    pass
+import sys
+# Force openpyxl to use pure-Python numeric types (int, float, Decimal)
+# and completely prevent dummy/incomplete numpy in frozen executables
+sys.modules['numpy'] = None
 
 import os
 import openpyxl

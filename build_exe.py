@@ -23,7 +23,7 @@ ANANYA ENTERPRISES - INVOICE AUTOMATION & WHATSAPP DISPATCHER
 ===============================================================
 
 Standalone Windows Distribution
-Version: 1.0.1
+Version: 1.0.2
 
 --- QUICK START GUIDE ---
 
@@ -78,7 +78,7 @@ def run_pyinstaller():
     if not os.path.exists(spec_file):
         raise FileNotFoundError(f"Spec file not found: {spec_file}")
 
-    cmd = [sys.executable, "-m", "PyInstaller", "--clean", spec_file]
+    cmd = [sys.executable, "-m", "PyInstaller", "--clean", "-y", spec_file]
     print(f"  Command: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=BASE_DIR)
     if result.returncode != 0:
