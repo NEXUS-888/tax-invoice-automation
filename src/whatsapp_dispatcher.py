@@ -15,6 +15,7 @@ except ImportError:
     QUrl = None
 
 from whatsapp_automator import build_invoice_message
+from contacts_manager import normalize_phone
 
 
 # Executable basenames of the native WhatsApp Desktop app (Store / WinUI and WebView2 builds).
@@ -39,14 +40,7 @@ class WhatsAppDispatcher:
 
     def format_phone_number(self, phone):
         """Clean phone number string to international standard e.g. 919876543210."""
-        digits = ''.join(c for c in str(phone) if c.isdigit())
-        if not digits:
-            return ""
-        if len(digits) == 10 and digits[0] in '6789':
-            return f"91{digits}"
-        if len(digits) == 12 and digits.startswith('91') and digits[2] in '6789':
-            return digits
-        return ""
+        return normalize_phone(phone)
 
     def build_invoice_message(self, agency_name, invoice_no, month_desc):
         """Builds standard invoice text message with payment reminder note."""
@@ -653,6 +647,11 @@ class WhatsAppDispatcher:
 
         message = self.build_invoice_message(agency_name, invoice_no, month_desc)
         clean_phone = self.format_phone_number(phone) if phone else ""
+        if phone and not clean_phone:
+            # Opening WhatsApp without the number shows its "Send to" picker, where the PDF cannot be
+            # attached automatically — refuse instead of silently degrading.
+            return False, (f"'{phone}' is not a valid WhatsApp number for {agency_name}. "
+                           f"Fix it in the WhatsApp Contacts tab."), False
         target_mode = (target or self.mode or "app").lower()
         target_desc = f"{agency_name} ({clean_phone})" if clean_phone else agency_name
 

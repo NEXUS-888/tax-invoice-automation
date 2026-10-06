@@ -32,6 +32,9 @@ class TestContactsManager(unittest.TestCase):
         self.assertEqual(phones_dup, ["919141844840"])
         # Invalid numbers
         self.assertEqual(self.mgr.parse_phone_list("12345, abc, 0000000000"), [])
+        # Leading trunk 0 / 0091 used to be silently dropped, leaving the agency with no number
+        self.assertEqual(self.mgr.parse_phone_list("09141844840; 0091 98801 83840"),
+                         ["919141844840", "919880183840"])
 
     def test_whitespace_insensitive_lookup(self):
         # Update with trailing whitespace in sheet name

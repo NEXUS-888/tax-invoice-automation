@@ -15,14 +15,14 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
     QTabWidget, QFileDialog, QMessageBox, QTextEdit, QHeaderView,
     QGroupBox, QSpinBox, QDateEdit, QSplitter, QListWidget, QListWidgetItem,
-    QDialog, QFormLayout, QDoubleSpinBox, QProgressBar, QMenu, QToolTip
+    QDialog, QFormLayout, QDoubleSpinBox, QProgressBar, QMenu, QToolTip, QInputDialog
 )
 from PyQt6.QtCore import Qt, QDate, QThread, QObject, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QFont, QColor, QIcon, QCursor
 
 from excel_manager import ExcelManager
 from pdf_generator import PDFGenerator
-from contacts_manager import ContactsManager
+from contacts_manager import ContactsManager, normalize_phone
 from whatsapp_dispatcher import WhatsAppDispatcher
 from whatsapp_automator import WhatsAppAutomator
 from state_manager import StateManager
@@ -2014,14 +2014,22 @@ class InvoiceAutomationApp(QMainWindow):
                     self.execute_direct_share(agency_name, p, i_no, m_desc, p_path, r_i, target="web")
                 )
             menu.addSeparator()
+        else:
+            act_enter = menu.addAction("📱 Send via WhatsApp App (enter number)...")
+            act_enter.setToolTip("Asks for this agency's WhatsApp number, saves it, opens the chat and attaches the PDF")
+            act_enter.triggered.connect(
+                lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx, s_n=s_name:
+                self.prompt_number_and_share(agency_name, s_n, i_no, m_desc, p_path, r_i)
+            )
+            menu.addSeparator()
 
-        act_picker_app = menu.addAction("📱 Open WhatsApp App (Select Contact)...")
+        act_picker_app = menu.addAction("📱 Open WhatsApp App (Select Contact — paste PDF with Ctrl+V)...")
         act_picker_app.triggered.connect(
             lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
             self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="desktop")
         )
 
-        act_picker_web = menu.addAction("🌐 Open WhatsApp Web (Select Contact)...")
+        act_picker_web = menu.addAction("🌐 Open WhatsApp Web (Select Contact — paste PDF with Ctrl+V)...")
         act_picker_web.triggered.connect(
             lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
             self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="web")
@@ -2096,6 +2104,31 @@ class InvoiceAutomationApp(QMainWindow):
         else:
             self._set_share_status(row_idx, "❌ Could not open WhatsApp", "#ef4444")
             self._show_share_hint(msg)
+
+    def prompt_number_and_share(self, agency_name, sheet_name, inv_no, month_desc, pdf_path, row_idx=None):
+        """Asks for a missing WhatsApp number, saves it to contacts, then shares straight into that chat."""
+        prompt = (f"WhatsApp number for {agency_name}:\n"
+                  f"(e.g. 98765 43210 — it will be saved for next time)")
+        text = ""
+        while True:
+            text, ok = QInputDialog.getText(self, "WhatsApp Number", prompt, text=text)
+            if not ok or not text.strip():
+                return
+            clean = normalize_phone(text)
+            if clean:
+                break
+            QMessageBox.warning(self, "Invalid Number",
+                                f"'{text}' is not a valid WhatsApp number. Enter a 10-digit mobile number.")
+
+        if sheet_name:
+            self.contacts_mgr.update_phone(sheet_name, clean, agency_name)
+            self.populate_contacts_table()
+        if row_idx is not None and row_idx < self.dispatch_table.rowCount():
+            self.dispatch_table.blockSignals(True)
+            self.dispatch_table.setItem(row_idx, 3, QTableWidgetItem(clean))
+            self.dispatch_table.blockSignals(False)
+        self.log(f"Saved WhatsApp number {clean} for {agency_name}.")
+        self.execute_direct_share(agency_name, clean, inv_no, month_desc, pdf_path, row_idx, target="desktop")
 
     def _set_share_status(self, row_idx, text, color):
         if row_idx is None or row_idx >= self.dispatch_table.rowCount():

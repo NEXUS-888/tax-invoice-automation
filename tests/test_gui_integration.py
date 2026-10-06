@@ -45,6 +45,23 @@ class TestGUIIntegration(unittest.TestCase):
         self.assertEqual(item['route'], 'web_session')
         self.assertIn("Attaching", self.gui.dispatch_table.item(0, 5).text())
 
+    @patch("app_gui.QInputDialog.getText", return_value=("098765 43210", True))
+    def test_missing_number_is_asked_saved_and_shared_to_that_chat(self, _ask):
+        self._one_row_table()
+        self.gui.contacts_mgr = MagicMock()
+        with patch.object(self.gui, "populate_contacts_table"), \
+                patch.object(self.gui, "execute_direct_share") as mock_share:
+            self.gui.prompt_number_and_share("ACME", "ACME_SHEET", "1", "M", "x.pdf", 0)
+        self.gui.contacts_mgr.update_phone.assert_called_once_with("ACME_SHEET", "919876543210", "ACME")
+        mock_share.assert_called_once_with("ACME", "919876543210", "1", "M", "x.pdf", 0, target="desktop")
+        self.assertEqual(self.gui.dispatch_table.item(0, 3).text(), "919876543210")
+
+    @patch("app_gui.QInputDialog.getText", return_value=("", False))
+    def test_cancelled_number_prompt_shares_nothing(self, _ask):
+        with patch.object(self.gui, "execute_direct_share") as mock_share:
+            self.gui.prompt_number_and_share("ACME", "ACME_SHEET", "1", "M", "x.pdf", 0)
+        mock_share.assert_not_called()
+
     def test_app_share_uses_desktop_even_when_web_session_connected(self):
         self._one_row_table()
         self.gui.whatsapp_connected = True

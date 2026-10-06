@@ -2,6 +2,29 @@ import os
 import json
 import re
 
+
+def normalize_phone(raw):
+    """
+    Returns a WhatsApp number as country code + digits (e.g. 919876543210), or "" if unusable.
+    Accepts 98765 43210, 098765 43210, +91 98765 43210, 0091 98765 43210 and, when written with
+    + or 00, numbers from other countries.
+    """
+    text = str(raw or "").strip()
+    digits = ''.join(c for c in text if c.isdigit())
+    international = text.startswith('+') or digits.startswith('00')
+    if digits.startswith('00'):
+        digits = digits[2:]
+    if len(digits) == 11 and digits[0] == '0' and digits[1] in '6789':
+        digits = digits[1:]  # domestic trunk prefix
+    if len(digits) == 10 and digits[0] in '6789':
+        return f"91{digits}"
+    if len(digits) == 12 and digits.startswith('91') and digits[2] in '6789':
+        return digits
+    if international and 8 <= len(digits) <= 15 and digits[0] != '0' and not digits.startswith('91'):
+        return digits
+    return ""
+
+
 class ContactsManager:
     def __init__(self, contacts_json_path):
         self.contacts_json_path = contacts_json_path
@@ -50,16 +73,9 @@ class ContactsManager:
             p = p.strip()
             if not p:
                 continue
-            digits = ''.join(c for c in p if c.isdigit())
-            
-            if len(digits) == 10 and digits[0] in '6789':
-                digits = f"91{digits}"
-            elif len(digits) == 12 and digits.startswith('91') and digits[2] in '6789':
-                pass
-            else:
-                continue
-
-            cleaned.append(digits)
+            digits = normalize_phone(p)
+            if digits:
+                cleaned.append(digits)
 
         # Deduplicate preserving order
         seen = set()

@@ -28,7 +28,12 @@ class TestFormatting(unittest.TestCase):
         self.assertEqual(fmt("9876543210"), "919876543210")
         self.assertEqual(fmt("+91 98765 43210"), "919876543210")
         self.assertEqual(fmt("919876543210"), "919876543210")
-        self.assertEqual(fmt("098765-43210"), "")       # leading trunk zero -> 11 digits, rejected
+        self.assertEqual(fmt("098765-43210"), "919876543210")   # domestic trunk 0
+        self.assertEqual(fmt("0091 98765 43210"), "919876543210")
+        self.assertEqual(fmt("+1 415 555 2671"), "14155552671")  # other countries need + or 00
+        self.assertEqual(fmt("4155552671"), "")
+        self.assertEqual(fmt("+91 12345 67890"), "")             # Indian numbers still need a mobile prefix
+        self.assertEqual(fmt(None), "")
         self.assertEqual(fmt("5876543210"), "")          # not a valid Indian mobile prefix
         self.assertEqual(fmt("invalid123"), "")
         self.assertEqual(fmt(""), "")
@@ -387,6 +392,17 @@ class TestShareEntryPoint(unittest.TestCase):
         self.assertEqual(mock_bg.call_args[0][0], os.path.abspath(self.pdf))
         self.assertIs(mock_bg.call_args.kwargs["on_complete"], cb)
         self.assertNotIn("attached", msg.lower().replace("attaching", ""))  # never claims success up front
+
+    @patch.object(WhatsAppDispatcher, "auto_attach_pdf_in_background")
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_invalid_number_refuses_instead_of_opening_picker(self, mock_open, mock_bg, _wb, _popen):
+        ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
+            "ACME", "12345", "1", "M", self.pdf, target="desktop")
+        self.assertFalse(ok)
+        self.assertFalse(pending)
+        self.assertIn("not a valid WhatsApp number", msg)
+        mock_open.assert_not_called()
+        mock_bg.assert_not_called()
 
     @patch.object(WhatsAppDispatcher, "auto_attach_pdf_in_background")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)

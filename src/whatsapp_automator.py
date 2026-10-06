@@ -5,6 +5,8 @@ import urllib.parse
 import re
 import random
 
+from contacts_manager import normalize_phone
+
 
 PAYMENT_REMINDER_NOTE = "Note : please complete the payment before 10th of this month."
 
@@ -40,12 +42,7 @@ class WhatsAppAutomator:
                 print(f"[WhatsApp] {msg}".encode("ascii", "replace").decode("ascii"))
 
     def format_phone(self, phone):
-        digits = ''.join(c for c in str(phone) if c.isdigit())
-        if len(digits) == 10 and digits[0] in '6789':
-            return f"91{digits}"
-        if len(digits) == 12 and digits.startswith('91') and digits[2] in '6789':
-            return digits
-        return ""
+        return normalize_phone(phone)
 
     def parse_phones(self, phone_input):
         if not phone_input:
