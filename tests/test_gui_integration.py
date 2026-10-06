@@ -39,11 +39,21 @@ class TestGUIIntegration(unittest.TestCase):
         self.gui.whatsapp_connected = True
         self.gui.wa_worker = MagicMock()
         with patch.object(self.gui.wa_dispatcher, "share_invoice_to_whatsapp") as mock_disp:
-            self.gui.execute_direct_share("ACME", "9876543210", "1", "M", "x.pdf", 0, target="desktop")
+            self.gui.execute_direct_share("ACME", "9876543210", "1", "M", "x.pdf", 0, target="web")
         mock_disp.assert_not_called()
         item = self.gui.wa_worker.queue_share_preview.call_args[0][0]
         self.assertEqual(item['route'], 'web_session')
         self.assertIn("Attaching", self.gui.dispatch_table.item(0, 5).text())
+
+    def test_app_share_uses_desktop_even_when_web_session_connected(self):
+        self._one_row_table()
+        self.gui.whatsapp_connected = True
+        self.gui.wa_worker = MagicMock()
+        with patch.object(self.gui.wa_dispatcher, "share_invoice_to_whatsapp",
+                          return_value=(True, "attaching", True)) as mock_disp:
+            self.gui.execute_direct_share("ACME", "9876543210", "1", "M", "x.pdf", 0, target="desktop")
+        mock_disp.assert_called_once()
+        self.gui.wa_worker.queue_share_preview.assert_not_called()
 
     def test_share_without_session_uses_dispatcher_and_result_updates_row(self):
         self._one_row_table()

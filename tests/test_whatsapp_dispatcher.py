@@ -145,60 +145,174 @@ class TestFallback(unittest.TestCase):
 
 
 class TestDesktopAttach(unittest.TestCase):
+    RECT = (100, 100, 1300, 1000)
+
     def setUp(self):
         self.dispatcher = WhatsAppDispatcher()
         self.pdf = _make_pdf()
+        sleep = patch("whatsapp_dispatcher.time.sleep")
+        sleep.start()
+        self.addCleanup(sleep.stop)
 
     def tearDown(self):
         os.remove(self.pdf)
 
     def _patch(self, **kw):
-        defaults = dict(
-            find_whatsapp_desktop_windows=[(1234, "WhatsApp", "whatsapp.root.exe")],
-            copy_pdf_to_clipboard=True,
-            force_foreground=True,
-            send_ctrl_v=True,
-        )
-        defaults.update(kw)
-        patches = [patch.object(WhatsAppDispatcher, k, return_value=v) for k, v in defaults.items()]
         mocks = {}
-        for name, p in zip(defaults, patches):
+        for name, value in kw.items():
+            p = patch.object(WhatsAppDispatcher, name, return_value=value)
             mocks[name] = p.start()
             self.addCleanup(p.stop)
-        sleep = patch("whatsapp_dispatcher.time.sleep")
-        sleep.start()
-        self.addCleanup(sleep.stop)
         return mocks
 
+    # ── attach_via_desktop orchestration ──
+
+    def _patch_flow(self, paste_results):
+        m = self._patch(wait_for_onscreen_window=(1234, self.RECT), wait_until_stable=None,
+                        window_on_screen_rect=self.RECT, copy_pdf_to_clipboard=True)
+        p = patch.object(WhatsAppDispatcher, "paste_and_verify", side_effect=list(paste_results))
+        m["paste_and_verify"] = p.start()
+        self.addCleanup(p.stop)
+        return m
+
     @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_success_path_focuses_then_pastes(self):
-        m = self._patch()
+    def test_preview_detected_is_success(self):
+        m = self._patch_flow(["attached"])
         ok, msg = self.dispatcher.attach_via_desktop(self.pdf, was_running=True)
         self.assertTrue(ok)
-        m["force_foreground"].assert_called_once_with(1234)
-        m["send_ctrl_v"].assert_called_once()
+        self.assertIn("attached", msg)
+        m["paste_and_verify"].assert_called_once_with(1234, self.RECT)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_no_window_times_out(self):
-        m = self._patch(find_whatsapp_desktop_windows=[])
-        ok, msg = self.dispatcher.attach_via_desktop(self.pdf, window_timeout=0.01)
+    def test_nothing_happened_retries_once_then_fails(self):
+        m = self._patch_flow(["nothing", "nothing"])
+        ok, msg = self.dispatcher.attach_via_desktop(self.pdf, was_running=True)
+        self.assertFalse(ok)
+        self.assertEqual(m["paste_and_verify"].call_count, 2)
+        self.assertEqual(m["copy_pdf_to_clipboard"].call_count, 2)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows only")
+    def test_retry_succeeds_on_second_paste(self):
+        self._patch_flow(["nothing", "attached"])
+        ok, _ = self.dispatcher.attach_via_desktop(self.pdf, was_running=False)
+        self.assertTrue(ok)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows only")
+    def test_hard_error_is_not_retried(self):
+        m = self._patch_flow(["Another window is covering WhatsApp."])
+        ok, msg = self.dispatcher.attach_via_desktop(self.pdf, was_running=True)
+        self.assertFalse(ok)
+        self.assertIn("covering", msg)
+        m["paste_and_verify"].assert_called_once()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows only")
+    def test_window_never_on_screen(self):
+        m = self._patch(wait_for_onscreen_window=(None, None), paste_and_verify="attached")
+        ok, msg = self.dispatcher.attach_via_desktop(self.pdf)
         self.assertFalse(ok)
         self.assertIn("did not appear", msg)
-        m["send_ctrl_v"].assert_not_called()
+        m["paste_and_verify"].assert_not_called()
 
     @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_focus_refused_does_not_paste(self):
-        m = self._patch(force_foreground=False)
-        ok, msg = self.dispatcher.attach_via_desktop(self.pdf)
-        self.assertFalse(ok)
+    def test_cold_start_waits_longer(self):
+        m = self._patch_flow(["attached"])
+        self.dispatcher.attach_via_desktop(self.pdf, was_running=False)
+        cold = m["wait_until_stable"].call_args.kwargs
+        self.assertGreaterEqual(cold["min_wait"], 4.0)
+
+    # ── paste_and_verify ──
+
+    def _sig(self, value):
+        return bytes([value, value, value, 255]) * (WhatsAppDispatcher.SAMPLE ** 2)
+
+    def test_paste_clicks_message_box_then_detects_preview(self):
+        m = self._patch(composer_point=(800, 950), window_owns_point=True, click_at=True,
+                        window_on_screen_rect=self.RECT, send_ctrl_v=True)
+        with patch.object(WhatsAppDispatcher, "capture_signature",
+                          side_effect=[self._sig(20), self._sig(200)]):
+            self.assertEqual(self.dispatcher.paste_and_verify(1234, self.RECT), "attached")
+        m["click_at"].assert_called_once_with(800, 950)
+        m["send_ctrl_v"].assert_called_once()
+
+    def test_paste_with_no_screen_change_reports_nothing(self):
+        self._patch(composer_point=(800, 950), window_owns_point=True, click_at=True,
+                    window_on_screen_rect=self.RECT, send_ctrl_v=True)
+        with patch.object(WhatsAppDispatcher, "capture_signature", return_value=self._sig(20)):
+            self.assertEqual(self.dispatcher.paste_and_verify(1234, self.RECT, timeout=1.0), "nothing")
+
+    def test_unreadable_screen_is_unverified_not_failure(self):
+        self._patch(composer_point=(800, 950), window_owns_point=True, click_at=True,
+                    window_on_screen_rect=self.RECT, send_ctrl_v=True, capture_signature=None)
+        self.assertEqual(self.dispatcher.paste_and_verify(1234, self.RECT, timeout=1.0), "unverified")
+
+    def test_covered_window_is_never_clicked(self):
+        m = self._patch(composer_point=(800, 950), window_owns_point=False, force_foreground=False,
+                        click_at=True, send_ctrl_v=True)
+        result = self.dispatcher.paste_and_verify(1234, self.RECT)
+        self.assertIn("covering", result)
+        m["click_at"].assert_not_called()
         m["send_ctrl_v"].assert_not_called()
 
+    def test_window_hidden_after_click_does_not_paste(self):
+        m = self._patch(composer_point=(800, 950), window_owns_point=True, click_at=True,
+                        window_on_screen_rect=None, send_ctrl_v=True)
+        self.assertIn("hidden", self.dispatcher.paste_and_verify(1234, self.RECT))
+        m["send_ctrl_v"].assert_not_called()
+
+    def test_blocked_keystroke_reported(self):
+        self._patch(composer_point=(800, 950), window_owns_point=True, click_at=True,
+                    window_on_screen_rect=self.RECT, send_ctrl_v=False, capture_signature=self._sig(1))
+        self.assertIn("blocked", self.dispatcher.paste_and_verify(1234, self.RECT))
+
+    # ── geometry / window state ──
+
     @unittest.skipUnless(sys.platform == "win32", "Windows only")
-    def test_uipi_blocked_input_reported(self):
-        self._patch(send_ctrl_v=False)
-        ok, msg = self.dispatcher.attach_via_desktop(self.pdf)
-        self.assertFalse(ok)
-        self.assertIn("blocked", msg)
+    def test_composer_point_is_inside_message_box(self):
+        with patch("ctypes.windll.user32.GetDpiForWindow", return_value=144, create=True):
+            x, y = self.dispatcher.composer_point(1234, (0, 0, 1200, 900))
+        self.assertEqual((x, y), (900, 840))  # 75% across, 40 logical px (60 physical @150%) from bottom
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows only")
+    def test_composer_point_default_dpi(self):
+        with patch("ctypes.windll.user32.GetDpiForWindow", return_value=0, create=True):
+            x, y = self.dispatcher.composer_point(1234, (100, 50, 900, 650))
+        self.assertEqual((x, y), (700, 610))
+
+    def test_changed_fraction(self):
+        a, b = self._sig(10), self._sig(10)
+        self.assertEqual(WhatsAppDispatcher.changed_fraction(a, b), 0.0)
+        self.assertEqual(WhatsAppDispatcher.changed_fraction(a, self._sig(200)), 1.0)
+        half = self._sig(10)[: len(a) // 2] + self._sig(200)[len(a) // 2:]
+        self.assertAlmostEqual(WhatsAppDispatcher.changed_fraction(a, half), 0.5)
+        self.assertEqual(WhatsAppDispatcher.changed_fraction(None, a), 0.0)
+
+    def test_wait_for_window_ignores_offscreen_and_reactivates(self):
+        """A WhatsApp window parked at -32000 must not count; WhatsApp is re-activated via its URL."""
+        self._patch(find_whatsapp_desktop_windows=[(1234, "WhatsApp", "whatsapp.root.exe")],
+                    window_on_screen_rect=None)
+        opened = self._patch(_open_url=True)["_open_url"]
+        clock = iter(range(0, 100))
+        with patch("whatsapp_dispatcher.time.time", side_effect=lambda: next(clock)):
+            self.assertEqual(self.dispatcher.wait_for_onscreen_window(timeout=10), (None, None))
+        opened.assert_called_once_with("whatsapp://")
+
+    def test_wait_for_window_returns_largest_onscreen(self):
+        self._patch(find_whatsapp_desktop_windows=[(1, "WhatsApp", "whatsapp.exe"), (2, "WhatsApp", "whatsapp.exe")])
+        rects = {1: (0, 0, 400, 400), 2: (0, 0, 1200, 900)}
+        with patch.object(WhatsAppDispatcher, "window_on_screen_rect", side_effect=lambda h: rects[h]):
+            self.assertEqual(self.dispatcher.wait_for_onscreen_window(timeout=5), (2, rects[2]))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows only")
+    def test_window_on_screen_rect_rejects_invalid(self):
+        self.assertIsNone(self.dispatcher.window_on_screen_rect(0))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows only")
+    def test_capture_signature_real_gdi(self):
+        sig = self.dispatcher.capture_signature((0, 0, 200, 200))
+        self.assertIsNotNone(sig)
+        self.assertEqual(len(sig), WhatsAppDispatcher.SAMPLE ** 2 * 4)
+
+    # ── background thread ──
 
     @patch.object(WhatsAppDispatcher, "run_fallback", return_value="fallback hint")
     @patch.object(WhatsAppDispatcher, "attach_via_desktop", return_value=(False, "nope"))

@@ -23,7 +23,7 @@ ANANYA ENTERPRISES - INVOICE AUTOMATION & WHATSAPP DISPATCHER
 ===============================================================
 
 Standalone Windows Distribution
-Version: 1.0.4
+Version: 1.0.6
 
 --- QUICK START GUIDE ---
 

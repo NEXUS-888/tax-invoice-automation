@@ -2053,11 +2053,11 @@ class InvoiceAutomationApp(QMainWindow):
 
     def execute_direct_share(self, agency_name, phone, inv_no, month_desc, pdf_path, row_idx=None, target=None):
         """
-        Shares one agency invoice, picking the most reliable route available:
-        1. Connected WhatsApp Web session (any target, phone known) -> Playwright attaches the PDF via
-           the page's file input and fills the caption; the user presses Send. Deterministic.
-        2. Otherwise WhatsAppDispatcher opens WhatsApp Desktop/Web and attaches in the background,
-           falling back to clipboard + Explorer pre-selection if anything fails.
+        Shares one agency invoice:
+        - target 'desktop'/'app' -> WhatsAppDispatcher opens the chat in WhatsApp Desktop and pastes the
+          PDF into it in the background, falling back to clipboard + Explorer pre-selection on failure.
+        - target 'web' with a connected WhatsApp Web session -> Playwright attaches the PDF and fills
+          the caption; the user presses Send.
         Results arrive in on_share_result; the GUI thread never blocks.
         """
         item = {
@@ -2070,7 +2070,7 @@ class InvoiceAutomationApp(QMainWindow):
             'target': target,
         }
 
-        if phone and self.whatsapp_connected and self.wa_worker:
+        if target == "web" and phone and self.whatsapp_connected and self.wa_worker:
             item['route'] = 'web_session'
             self._set_share_status(row_idx, "⏳ Attaching in WhatsApp Web...", "#eab308")
             self.log(f"Attaching invoice for {agency_name} in the connected WhatsApp Web session...")
