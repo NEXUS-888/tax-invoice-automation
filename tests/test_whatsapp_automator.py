@@ -86,6 +86,44 @@ class TestWhatsAppAutomator(unittest.TestCase):
         res = self.automator._wait_for_chat(timeout=1000)
         self.assertEqual(res, "INVALID_PHONE")
 
+    @patch("playwright.sync_api.sync_playwright")
+    def test_launch_session_stealth_configuration(self, mock_sync_playwright):
+        mock_pw = MagicMock()
+        mock_sync_playwright.return_value.start.return_value = mock_pw
+        mock_context = MagicMock()
+        mock_pw.chromium.launch_persistent_context.return_value = mock_context
+        mock_page = MagicMock()
+        mock_context.pages = [mock_page]
+
+        res = self.automator.launch_session(headless=False)
+        self.assertTrue(res)
+
+        # Check launch parameters
+        call_kwargs = mock_pw.chromium.launch_persistent_context.call_args[1]
+        self.assertIn("user_agent", call_kwargs)
+        self.assertIn("Chrome/", call_kwargs["user_agent"])
+        self.assertIn("args", call_kwargs)
+        self.assertIn("--disable-blink-features=AutomationControlled", call_kwargs["args"])
+
+        # Check stealth init script
+        mock_context.add_init_script.assert_called_once()
+        init_script = mock_context.add_init_script.call_args[0][0]
+        self.assertIn("navigator", init_script)
+        self.assertIn("webdriver", init_script)
+
+    def test_open_chat_for_number_spa(self):
+        mock_page = MagicMock()
+        mock_page.url = "https://web.whatsapp.com"
+        self.automator.page = mock_page
+
+        res = self.automator._open_chat_for_number("919876543210")
+        self.assertTrue(res)
+        mock_page.evaluate.assert_called_once_with(
+            "(url) => { window.location.href = url; }",
+            "https://web.whatsapp.com/send?phone=919876543210"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+

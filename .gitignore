@@ -14,6 +14,14 @@ output_test/
 scratch/
 *.xlsx
 *.xlsm
+!Ananya Bill.xlsm
+
+# Local App State
+data/app_state.json
+
+# Build & packaging artifacts
+build/
+dist/
 
 # Debug screenshots & log files
 *.png

@@ -85,7 +85,14 @@ class PDFGenerator:
         # ── 2. Recipient TO box + metadata grid ───────────────────────────
         addr_lines = [escape(str(a)) for a in agency_data.get('address', []) if a]
         addr_str = "<br/>".join(addr_lines)
-        date_str = str(agency_data.get('date', '')).split(' ')[0]
+        raw_date = agency_data.get('date', '')
+        if hasattr(raw_date, 'strftime'):
+            date_str = raw_date.strftime('%d-%m-%Y')
+        else:
+            date_str = str(raw_date).split(' ')[0]
+            parts = date_str.split('-')
+            if len(parts) == 3 and len(parts[0]) == 4:
+                date_str = f"{parts[2]}-{parts[1]}-{parts[0]}"
 
         left_to_content = [
             Paragraph('<b>TO</b>', bold_style),
@@ -199,6 +206,18 @@ class PDFGenerator:
         elements.append(t_main)
         elements.append(Spacer(1, 6))
 
+        # ── Note ───────────────────────────────────────────────────────────
+        note_style = ParagraphStyle(
+            'NoteStyle', parent=styles['Normal'],
+            fontName='Helvetica-Bold', fontSize=9, leading=11,
+            textColor=colors.HexColor('#C00000'),
+        )
+        elements.append(Paragraph(
+            '<b>Note : please complete the payment before 10th of this month</b>',
+            note_style
+        ))
+        elements.append(Spacer(1, 4))
+
         # ── 5. Signature block — single 600-DPI image, right-aligned ─────
         # The image already contains "For ANANYA ENTERPRISES", ink sig, and
         # "Proprietor" — NO extra text is rendered by code.
@@ -210,6 +229,16 @@ class PDFGenerator:
             elements.append(sig_img)
         else:
             elements.append(Spacer(1, 55))
+
+        # Remove any old PDFs for this agency from previous runs (different invoice numbers or _updated)
+        if os.path.exists(self.output_dir):
+            for existing_f in os.listdir(self.output_dir):
+                if existing_f.lower().endswith('.pdf') and safe_sheet_name.lower() in existing_f.lower():
+                    if existing_f != file_name:
+                        try:
+                            os.remove(os.path.join(self.output_dir, existing_f))
+                        except (PermissionError, OSError):
+                            pass
 
         # ── Build PDF ─────────────────────────────────────────────────────
         target_path = pdf_path
@@ -229,8 +258,16 @@ class PDFGenerator:
 
         return target_path
 
-    def batch_generate(self, agency_data_list):
+    def batch_generate(self, agency_data_list, clean_output_dir=True):
         """Generates PDF invoices for all agencies in batch."""
+        if clean_output_dir and os.path.exists(self.output_dir):
+            for f in os.listdir(self.output_dir):
+                if f.lower().endswith('.pdf'):
+                    try:
+                        os.remove(os.path.join(self.output_dir, f))
+                    except (PermissionError, OSError):
+                        pass
+
         generated_paths = []
         for agency in agency_data_list:
             pdf_path = self.generate_agency_pdf(agency)

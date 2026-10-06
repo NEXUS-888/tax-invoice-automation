@@ -3,6 +3,7 @@ import sys
 import time
 import urllib.parse
 import re
+import random
 
 
 class WhatsAppAutomator:
@@ -59,7 +60,32 @@ class WhatsAppAutomator:
                 except Exception:
                     pass
 
-    def launch_session(self, headless=True):
+    def _launch_context(self, headless, user_agent, launch_args):
+        """Attempts to launch persistent context using Chromium, Edge, or Chrome channels."""
+        channels = [None, "msedge", "chrome"]
+        last_exc = None
+        for ch in channels:
+            try:
+                kwargs = {
+                    "user_data_dir": self.session_dir,
+                    "headless": headless,
+                    "no_viewport": True,
+                    "user_agent": user_agent,
+                    "args": launch_args,
+                }
+                if ch:
+                    kwargs["channel"] = ch
+                ctx = self.playwright.chromium.launch_persistent_context(**kwargs)
+                if ch:
+                    self.log(f"Launched browser using system '{ch}' channel.")
+                return ctx
+            except Exception as e:
+                last_exc = e
+                continue
+        if last_exc:
+            raise last_exc
+
+    def launch_session(self, headless=False):
         from playwright.sync_api import sync_playwright
 
         if self.browser_context:
@@ -67,22 +93,29 @@ class WhatsAppAutomator:
             return True
 
         self._clean_session_lockfiles()
-        self.is_headless = headless
+
+        launch_args = [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--start-maximized",
+            "--disable-blink-features=AutomationControlled",
+        ]
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/127.0.0.0 Safari/537.36"
+        )
 
         try:
-            self.log(f"Initializing WhatsApp Web session ({'Background mode' if headless else 'Interactive window'})...")
+            self.log("Initializing WhatsApp Web session (Interactive window)...")
             self.playwright = sync_playwright().start()
 
-            self.browser_context = self.playwright.chromium.launch_persistent_context(
-                user_data_dir=self.session_dir,
-                headless=headless,
-                no_viewport=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--start-maximized",
-                ],
+            self.browser_context = self._launch_context(headless, user_agent, launch_args)
+
+            # 0ms Chromium Stealth Masking: mask navigator.webdriver to undefined across all document frames
+            self.browser_context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             )
 
             self.page = (
@@ -98,16 +131,9 @@ class WhatsAppAutomator:
             self._clean_session_lockfiles()
             try:
                 time.sleep(1)
-                self.browser_context = self.playwright.chromium.launch_persistent_context(
-                    user_data_dir=self.session_dir,
-                    headless=headless,
-                    no_viewport=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--start-maximized",
-                    ],
+                self.browser_context = self._launch_context(headless, user_agent, launch_args)
+                self.browser_context.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
                 )
                 self.page = (
                     self.browser_context.pages[0]
@@ -154,27 +180,19 @@ class WhatsAppAutomator:
         return False
 
     def wait_for_login(self, timeout=60):
-        """Waits for user to scan QR code and log into WhatsApp Web. Automatically switches to visible mode if QR code scan is required."""
+        """Waits for user to scan QR code and log into WhatsApp Web."""
         self.log("Checking WhatsApp Web login status...")
         start = time.time()
         while time.time() - start < timeout:
             if self.is_logged_in():
-                self.log("✅ WhatsApp Web is logged in and ready in background!")
+                self.log("✅ WhatsApp Web is logged in and ready!")
                 return True
 
             if self.is_qr_screen():
-                if getattr(self, 'is_headless', False):
-                    self.log("📱 QR Code scan required! Opening visible browser window for QR scan...")
-                    self.close()
-                    self.launch_session(headless=False)
-                    time.sleep(2)
-                    continue
-                else:
-                    self.log("📱 QR Code detected! Please scan the QR code in the WhatsApp window using your phone...")
+                self.log("📱 QR Code detected! Please scan the QR code in the WhatsApp window using your phone...")
 
             time.sleep(1.5)
         return False
-
 
 
 
@@ -339,7 +357,7 @@ class WhatsAppAutomator:
                     lines = message.split("\n")
                     for i, line in enumerate(lines):
                         if line:
-                            self.page.keyboard.type(line)
+                            self.page.keyboard.type(line, delay=random.randint(15, 35))
                         if i < len(lines) - 1:
                             self.page.keyboard.press("Shift+Enter")
                     time.sleep(0.3)
@@ -586,6 +604,7 @@ class WhatsAppAutomator:
         text_message = (
             f"Dear {agency_name},\n\n"
             f"Please find attached your invoice (Invoice No: {invoice_no}) for {month_desc}.\n\n"
+            f"Note: Please complete the payment before 10th of this month.\n\n"
             f"Thank you,\nANANYA ENTERPRISES"
         )
 
@@ -669,8 +688,9 @@ class WhatsAppAutomator:
 
         for idx, phone in enumerate(phone_list):
             if idx > 0:
-                self.log("  Waiting 3 seconds before sending to next contact...")
-                time.sleep(3.0)  # Safe delay between bulk recipients
+                delay = round(random.uniform(3.0, 6.0), 1)
+                self.log(f"  Waiting {delay} seconds before sending to next contact...")
+                time.sleep(delay)  # Randomized delay between bulk recipients
 
             ok, msg = self.send_invoice_to_single_number(
                 phone, agency_name, invoice_no, month_desc, pdf_path,

@@ -1,5 +1,6 @@
 import os
 import openpyxl
+from openpyxl.styles import Font
 import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
@@ -129,7 +130,7 @@ class ExcelManager:
 
         return agencies
 
-    def generate_updated_workbook(self, target_month_year, target_date_str, starting_inv_no, updated_loads_map, output_file_path, agency_meta_map=None):
+    def generate_updated_workbook(self, target_month_year, target_date_str, starting_inv_no, updated_loads_map, output_file_path, agency_meta_map=None, custom_inv_map=None):
         """
         Generates a new updated Excel file for next month.
         - target_month_year: e.g. "AUGUST 2026"
@@ -137,18 +138,35 @@ class ExcelManager:
         - starting_inv_no: int starting counter (e.g. 1721)
         - updated_loads_map: dict of {sheet_name: list_of_vehicle_dicts}
         - agency_meta_map: optional dict containing metadata for new agencies {sheet_name: {agency_name, pan_no, vendor_code, gst_no, gstin, address}}
+        - custom_inv_map: optional dict of {sheet_name: custom_inv_no} for manually entered invoice numbers
         """
         os.makedirs(os.path.dirname(os.path.abspath(output_file_path)), exist_ok=True)
         wb = openpyxl.load_workbook(self.file_path, keep_vba=False)
         agency_meta_map = agency_meta_map or {}
+        custom_inv_map = custom_inv_map or {}
 
         # Reference template sheet for copying when new agency added
         ref_template_name = [s for s in wb.sheetnames if s != 'Sheet1'][0]
 
         # Determine all target sheet names
-        target_sheet_names = list(wb.sheetnames)
+        # Clean target sheet names: deduplicate matching by stripped lowercase name
+        target_sheet_names = []
+        seen_sheet_keys = set()
+        for sname in wb.sheetnames:
+            if sname == 'Sheet1':
+                continue
+            clean_k = sname.strip().lower()
+            if clean_k not in seen_sheet_keys:
+                seen_sheet_keys.add(clean_k)
+                target_sheet_names.append(sname)
+
+        # Add any newly added agencies from updated_loads_map
         for sname in updated_loads_map.keys():
-            if sname not in target_sheet_names and sname != 'Sheet1':
+            if sname == 'Sheet1':
+                continue
+            clean_k = sname.strip().lower()
+            if clean_k not in seen_sheet_keys:
+                seen_sheet_keys.add(clean_k)
                 target_sheet_names.append(sname)
 
         current_inv_no = int(starting_inv_no)
@@ -165,7 +183,7 @@ class ExcelManager:
                 ws = wb.copy_worksheet(wb[ref_template_name])
                 ws.title = name
                 
-                meta = agency_meta_map.get(name, {})
+                meta = agency_meta_map.get(name, {}) or agency_meta_map.get(name.strip(), {})
                 if meta:
                     ws['A7'] = meta.get('agency_name', name)
                     ws['F7'] = meta.get('pan_no', '')
@@ -185,24 +203,45 @@ class ExcelManager:
             # 1. Update Date
             ws['F6'] = target_date_str
 
-            # 2. Update Invoice Number
-            ws['F10'] = current_inv_no
-            assigned_inv_no = current_inv_no
-            current_inv_no += 1
+            # 2. Update Invoice Number (use manually entered number if provided)
+            if custom_inv_map and (name in custom_inv_map or name.strip() in custom_inv_map):
+                assigned_inv_no = int(custom_inv_map.get(name) or custom_inv_map.get(name.strip()))
+            else:
+                assigned_inv_no = current_inv_no
+                current_inv_no += 1
+            ws['F10'] = assigned_inv_no
 
             # 3. Update Month Description
             ws['A13'] = f"LPG CYLINDER LOADING AND UNLOADING CHARGES FOR THE MONTH {target_month_year.upper()}"
 
             # 4. Update Vehicles Loads & Amounts
-            agency_vehicles_data = updated_loads_map.get(name, [])
+            # Robust lookup in updated_loads_map (exact, stripped, or case-insensitive)
+            agency_vehicles_data = updated_loads_map.get(name)
+            if agency_vehicles_data is None:
+                agency_vehicles_data = updated_loads_map.get(name.strip())
+            if agency_vehicles_data is None:
+                name_clean = name.strip().lower()
+                for k, v in updated_loads_map.items():
+                    if k.strip().lower() == name_clean:
+                        agency_vehicles_data = v
+                        break
+            if agency_vehicles_data is None:
+                agency_vehicles_data = []
             
             v_map = {}
             if isinstance(agency_vehicles_data, dict):
                 for vno, ld in agency_vehicles_data.items():
-                    v_map[vno] = {'loads': float(ld)}
+                    v_str = str(vno).strip()
+                    norm_k = re.sub(r'[\s-]+', '', v_str).upper()
+                    item = {'loads': float(ld), 'vehicle_no': v_str}
+                    v_map[v_str] = item
+                    v_map[norm_k] = item
             else:
                 for vitem in agency_vehicles_data:
-                    v_map[vitem['vehicle_no']] = vitem
+                    v_str = str(vitem.get('vehicle_no', '')).strip()
+                    norm_k = re.sub(r'[\s-]+', '', v_str).upper()
+                    v_map[v_str] = vitem
+                    v_map[norm_k] = vitem
 
             subtotal = 0.0
             vehicles_info = []
@@ -220,14 +259,16 @@ class ExcelManager:
 
                 if desc:
                     v_no = str(desc).strip()
+                    norm_v_no = re.sub(r'[\s-]+', '', v_no).upper()
                     used_vehicles.add(v_no)
+                    used_vehicles.add(norm_v_no)
 
-                    if v_no in v_map:
-                        vdata = v_map[v_no]
+                    vdata = v_map.get(v_no) or v_map.get(norm_v_no)
+                    if vdata:
                         new_load = float(vdata.get('loads', 0))
                         ws.cell(r, 4).value = new_load
 
-                        if 'rate' in vdata:
+                        if 'rate' in vdata and vdata['rate'] is not None:
                             ws.cell(r, 5).value = float(vdata['rate'])
                     else:
                         new_load = float(ws.cell(r, 4).value or 0)
@@ -256,8 +297,9 @@ class ExcelManager:
                         "the workbook template supports a maximum of 13."
                     )
                 for vitem in agency_vehicles_data:
-                    v_no = vitem['vehicle_no']
-                    if v_no not in used_vehicles and first_empty_row is not None and first_empty_row < 30:
+                    v_no = str(vitem['vehicle_no']).strip()
+                    norm_v = re.sub(r'[\s-]+', '', v_no).upper()
+                    if v_no not in used_vehicles and norm_v not in used_vehicles and first_empty_row is not None and first_empty_row < 30:
                         max_sl += 1
                         r = first_empty_row
                         new_load = float(vitem.get('loads', 0))
@@ -297,6 +339,8 @@ class ExcelManager:
             ws['F32'] = cgst
             ws['F33'] = grand_total
             ws['A34'] = in_words
+            ws['A35'] = "Note : please complete the payment before 10th of this month"
+            ws['A35'].font = Font(name="Calibri", size=10, bold=True, color="C00000")
 
             agency_data_list.append({
                 'sheet_name': name,
@@ -327,3 +371,102 @@ class ExcelManager:
             self.last_output_file_path = alt_path
 
         return agency_data_list
+
+    def build_agency_invoice_data(self, sheet_name, target_month_year, target_date_str, invoice_no, vehicles_list=None, agency_meta=None):
+        """
+        Constructs a complete invoice data dictionary for a single agency without processing other sheets.
+        Used for on-demand single PDF generation and direct sharing.
+        """
+        agency_meta = agency_meta or {}
+        agency_name = agency_meta.get('agency_name') or sheet_name
+        pan_no = agency_meta.get('pan_no', '')
+        vendor_code = agency_meta.get('vendor_code', '')
+        gst_no = agency_meta.get('gst_no', '')
+        gstin = agency_meta.get('gstin', '')
+        address = agency_meta.get('address', ['', '', ''])
+
+        # If metadata is incomplete and workbook file exists, look up sheet directly
+        if not (pan_no and gst_no) and os.path.exists(self.file_path):
+            try:
+                wb = openpyxl.load_workbook(self.file_path, data_only=True)
+                sname_to_use = sheet_name if sheet_name in wb.sheetnames else sheet_name.strip()
+                if sname_to_use in wb.sheetnames:
+                    ws = wb[sname_to_use]
+                    agency_name = agency_name or ws['A7'].value or sheet_name
+                    pan_no = pan_no or ws['F7'].value or ""
+                    vendor_code = vendor_code or ws['F8'].value or ""
+                    gst_no = gst_no or ws['F9'].value or ""
+                    gstin = gstin or ws['A11'].value or ""
+                    if not any(address):
+                        address = [ws['A8'].value or "", ws['A9'].value or "", ws['A10'].value or ""]
+            except Exception:
+                pass
+
+        if vehicles_list is None and os.path.exists(self.file_path):
+            try:
+                wb = openpyxl.load_workbook(self.file_path, data_only=True)
+                sname_to_use = sheet_name if sheet_name in wb.sheetnames else sheet_name.strip()
+                if sname_to_use in wb.sheetnames:
+                    ws = wb[sname_to_use]
+                    vehicles_list = []
+                    for r in range(17, 30):
+                        desc = ws.cell(r, 3).value
+                        if desc:
+                            vehicles_list.append({
+                                'sl': ws.cell(r, 1).value,
+                                'hsn': ws.cell(r, 2).value or "",
+                                'vehicle_no': str(desc).strip(),
+                                'loads': ws.cell(r, 4).value or 0,
+                                'rate': ws.cell(r, 5).value or 0,
+                            })
+            except Exception:
+                vehicles_list = []
+
+        vehicles_list = vehicles_list or []
+        vehicles_info = []
+        subtotal = 0.0
+
+        for idx, v in enumerate(vehicles_list):
+            sl = v.get('sl') or (idx + 1)
+            hsn = v.get('hsn', '')
+            v_no = str(v.get('vehicle_no', '')).strip()
+            loads = float(v.get('loads', 0))
+            rate = float(v.get('rate', 0))
+            v_total = round(loads * rate, 2)
+            subtotal += v_total
+            vehicles_info.append({
+                'sl': sl,
+                'hsn': hsn,
+                'vehicle_no': v_no,
+                'loads': loads,
+                'rate': rate,
+                'total_amount': v_total
+            })
+
+        subtotal = round(subtotal, 2)
+        sgst = round(subtotal * 0.09, 2)
+        cgst = round(subtotal * 0.09, 2)
+        grand_total = round(subtotal + sgst + cgst, 2)
+        in_words = num_to_words_indian(grand_total)
+
+        month_desc = f"LPG CYLINDER LOADING AND UNLOADING CHARGES FOR THE MONTH {target_month_year.upper()}"
+
+        return {
+            'sheet_name': sheet_name,
+            'agency_name': agency_name,
+            'pan_no': pan_no,
+            'vendor_code': vendor_code,
+            'gst_no': gst_no,
+            'gstin': gstin,
+            'address': address,
+            'date': target_date_str,
+            'invoice_no': invoice_no,
+            'month_desc': month_desc,
+            'vehicles': vehicles_info,
+            'total': subtotal,
+            'sgst': sgst,
+            'cgst': cgst,
+            'grand_total': grand_total,
+            'in_words': in_words
+        }
+

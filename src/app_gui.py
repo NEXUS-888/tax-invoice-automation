@@ -1,6 +1,8 @@
 import os
 import sys
 import subprocess
+import time
+import random
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
@@ -8,16 +10,17 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
     QTabWidget, QFileDialog, QMessageBox, QTextEdit, QHeaderView,
     QGroupBox, QSpinBox, QDateEdit, QSplitter, QListWidget, QListWidgetItem,
-    QDialog, QFormLayout, QDoubleSpinBox, QProgressBar
+    QDialog, QFormLayout, QDoubleSpinBox, QProgressBar, QMenu
 )
 from PyQt6.QtCore import Qt, QDate, QThread, QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QFont, QColor, QIcon
+from PyQt6.QtGui import QFont, QColor, QIcon, QCursor
 
 from excel_manager import ExcelManager
 from pdf_generator import PDFGenerator
 from contacts_manager import ContactsManager
 from whatsapp_dispatcher import WhatsAppDispatcher
 from whatsapp_automator import WhatsAppAutomator
+from state_manager import StateManager
 
 
 class AddNewAgencyDialog(QDialog):
@@ -110,6 +113,85 @@ class AddNewAgencyDialog(QDialog):
         }
 
 
+class EditAgencyDialog(QDialog):
+    def __init__(self, agency_meta, phone_str="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Edit Agency Profile: {agency_meta.get('sheet_name', '')}")
+        self.setFixedSize(500, 530)
+
+        layout = QFormLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
+
+        self.sheet_name = str(agency_meta.get('sheet_name') or '')
+        sheet_lbl = QLabel(self.sheet_name)
+        sheet_lbl.setStyleSheet("font-weight: bold; font-size: 14px; color: #38bdf8;")
+        layout.addRow("Agency Sheet Name:", sheet_lbl)
+
+        self.agency_name_edit = QLineEdit(str(agency_meta.get('agency_name') or ''))
+        self.agency_name_edit.setPlaceholderText("Full Agency Name")
+        layout.addRow("Full Agency Name*:", self.agency_name_edit)
+
+        self.pan_edit = QLineEdit(str(agency_meta.get('pan_no') or ''))
+        layout.addRow("PAN No:", self.pan_edit)
+
+        self.vendor_edit = QLineEdit(str(agency_meta.get('vendor_code') or ''))
+        layout.addRow("Vendor Code:", self.vendor_edit)
+
+        self.gst_no_edit = QLineEdit(str(agency_meta.get('gst_no') or ''))
+        layout.addRow("GST No:", self.gst_no_edit)
+
+        self.gstin_edit = QLineEdit(str(agency_meta.get('gstin') or ''))
+        layout.addRow("GSTIN:", self.gstin_edit)
+
+        addr = agency_meta.get('address', ['', '', ''])
+        if not isinstance(addr, list):
+            addr = [str(addr)]
+        if len(addr) < 3:
+            addr = addr + [''] * (3 - len(addr))
+
+        self.addr1_edit = QLineEdit(str(addr[0] or ''))
+        layout.addRow("Address Line 1:", self.addr1_edit)
+
+        self.addr2_edit = QLineEdit(str(addr[1] or ''))
+        layout.addRow("Address Line 2:", self.addr2_edit)
+
+        self.addr3_edit = QLineEdit(str(addr[2] or ''))
+        layout.addRow("Address Line 3:", self.addr3_edit)
+
+        self.phone_edit = QLineEdit(str(phone_str or ''))
+        self.phone_edit.setPlaceholderText("WhatsApp Number(s) e.g. 919876543210, 919876543211")
+        layout.addRow("WhatsApp Phone(s):", self.phone_edit)
+
+        btn_layout = QHBoxLayout()
+        save_btn = QPushButton("Save Changes")
+        save_btn.setObjectName("actionBtn")
+        save_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addRow(btn_layout)
+
+    def get_data(self):
+        a_name = self.agency_name_edit.text().strip().upper() or self.sheet_name
+        return {
+            'sheet_name': self.sheet_name,
+            'agency_name': a_name,
+            'pan_no': self.pan_edit.text().strip().upper(),
+            'vendor_code': self.vendor_edit.text().strip(),
+            'gst_no': self.gst_no_edit.text().strip().upper(),
+            'gstin': self.gstin_edit.text().strip().upper(),
+            'address': [
+                self.addr1_edit.text().strip(),
+                self.addr2_edit.text().strip(),
+                self.addr3_edit.text().strip()
+            ],
+            'phone': self.phone_edit.text().strip()
+        }
+
+
 class AddVehicleDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -186,18 +268,14 @@ class WhatsAppWorker(QObject):
         """Runs on the dedicated thread. Processes all tasks sequentially."""
         import queue
 
-        # Step 1: Launch Playwright session (Background mode by default)
+        # Step 1: Launch Playwright session (Interactive visible browser window)
         try:
             self.automator = WhatsAppAutomator(self.session_dir, log_callback=self.log_message.emit)
-            ok = self.automator.launch_session(headless=True)
-            if ok:
-                # Check login status immediately; if QR code scan is needed, automator auto-switches to visible browser!
-                self.automator.wait_for_login(timeout=10)
+            ok = self.automator.launch_session(headless=False)
             self.connected.emit(ok, "WhatsApp Web session started." if ok else "Failed to start WhatsApp Web.")
         except Exception as e:
             self.connected.emit(False, f"Failed: {e}")
             return
-
 
 
 
@@ -267,7 +345,12 @@ class WhatsAppWorker(QObject):
         self.log_message.emit("🟢 WhatsApp Web logged in and ready! Starting dispatch...")
 
         try:
-            for job in jobs:
+            for idx, job in enumerate(jobs):
+                if idx > 0:
+                    delay = round(random.uniform(5.0, 12.0), 1)
+                    self.log_message.emit(f"⏳ Waiting {delay}s anti-ban pause before sending next agency invoice...")
+                    time.sleep(delay)
+
                 item = job['item']
                 if not item['phone']:
                     self.bulk_result.emit(job['row_idx'], False, "No Phone Number")
@@ -320,22 +403,43 @@ class InvoiceAutomationApp(QMainWindow):
         self.setMinimumSize(1000, 700)
 
         # Base paths
-        self.base_dir = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+        if getattr(sys, 'frozen', False):
+            self.base_dir = os.path.abspath(os.path.dirname(sys.executable))
+            bundle_dir = getattr(sys, '_MEIPASS', self.base_dir)
+        else:
+            self.base_dir = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+            bundle_dir = self.base_dir
+
         self.master_excel_path = os.path.join(self.base_dir, "Ananya Bill.xlsm")
+        if not os.path.exists(self.master_excel_path):
+            bundled_excel = os.path.join(bundle_dir, "Ananya Bill.xlsm")
+            if os.path.exists(bundled_excel):
+                try:
+                    import shutil
+                    shutil.copy2(bundled_excel, self.master_excel_path)
+                except Exception:
+                    self.master_excel_path = bundled_excel
+
         self.contacts_path = os.path.join(self.base_dir, "data", "contacts.json")
+        self.state_path = os.path.join(self.base_dir, "data", "app_state.json")
         self.wa_session_dir = os.path.join(self.base_dir, "data", "wa_session")
         self.output_dir = os.path.join(self.base_dir, "output")
+        os.makedirs(os.path.join(self.base_dir, "data"), exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
 
         # Managers
         self.contacts_mgr = ContactsManager(self.contacts_path)
+        self.state_mgr = StateManager(self.state_path)
         self.wa_dispatcher = WhatsAppDispatcher()
         self.wa_automator = None
         self.wa_thread = None
         self.wa_worker = None
         self.whatsapp_connected = False
         self.parsed_agencies = []
+        self.custom_agencies_list = []
         self.agency_vehicles_data = {}
         self.agency_meta_map = {}
+        self.agency_inv_map = {}
         self.current_selected_sheet = None
         self.generated_agency_list = []
         self.generated_pdf_list = []
@@ -354,7 +458,7 @@ class InvoiceAutomationApp(QMainWindow):
 
         # Stylesheet
         self.setStyleSheet("""
-            QMainWindow { background-color: #121418; }
+            QMainWindow, QDialog { background-color: #121418; color: #f8fafc; }
             
             /* Container Cards */
             QGroupBox {
@@ -439,6 +543,15 @@ class InvoiceAutomationApp(QMainWindow):
             QPushButton#singleSendBtn:hover {
                 background-color: #15803d;
             }
+            QPushButton#shareBtn {
+                background-color: #059669;
+                font-size: 12px;
+                padding: 4px 8px;
+                min-height: 26px;
+            }
+            QPushButton#shareBtn:hover {
+                background-color: #10b981;
+            }
             QPushButton#viewPdfBtn {
                 background-color: #0284c7;
                 font-size: 12px;
@@ -467,6 +580,24 @@ class InvoiceAutomationApp(QMainWindow):
             }
             QPushButton#newAgencyBtn:hover {
                 background-color: #7c3aed;
+            }
+            QPushButton#editAgencyBtn {
+                background-color: #0284c7;
+                font-size: 12px;
+                padding: 4px 10px;
+                min-height: 26px;
+            }
+            QPushButton#editAgencyBtn:hover {
+                background-color: #0369a1;
+            }
+            QPushButton#resetBtn {
+                background-color: #334155;
+                font-size: 12px;
+                padding: 6px 12px;
+                min-height: 30px;
+            }
+            QPushButton#resetBtn:hover {
+                background-color: #dc2626;
             }
 
             /* Tab Navigation Bar */
@@ -588,22 +719,31 @@ class InvoiceAutomationApp(QMainWindow):
         self.btn_wa_connect.clicked.connect(self.connect_whatsapp_account)
         top_grid.addWidget(self.btn_wa_connect, 0, 5)
 
+        self.btn_reset_defaults = QPushButton("🔄 Reset Defaults")
+        self.btn_reset_defaults.setObjectName("resetBtn")
+        self.btn_reset_defaults.setToolTip("Clear saved overrides and reload default data from master Excel")
+        self.btn_reset_defaults.clicked.connect(self.reset_to_excel_defaults)
+        top_grid.addWidget(self.btn_reset_defaults, 0, 6)
+
         # Row 1: Target Month, Date, Starting Inv
         top_grid.addWidget(QLabel("Target Month:"), 1, 0)
         self.month_edit = QLineEdit("AUGUST 2026")
         self.month_edit.setPlaceholderText("e.g. AUGUST 2026")
+        self.month_edit.textChanged.connect(lambda: self.save_app_state())
         top_grid.addWidget(self.month_edit, 1, 1)
 
         top_grid.addWidget(QLabel("Invoice Date:"), 1, 2)
         self.date_edit = QDateEdit()
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDate(QDate.currentDate())
+        self.date_edit.dateChanged.connect(lambda: self.save_app_state())
         top_grid.addWidget(self.date_edit, 1, 3)
 
         top_grid.addWidget(QLabel("Starting Inv #:"), 1, 4)
         self.starting_inv_spin = QSpinBox()
         self.starting_inv_spin.setRange(1, 99999)
         self.starting_inv_spin.setValue(1721)
+        self.starting_inv_spin.valueChanged.connect(self.on_starting_inv_changed)
         top_grid.addWidget(self.starting_inv_spin, 1, 5)
 
         main_layout.addWidget(top_group)
@@ -678,15 +818,41 @@ class InvoiceAutomationApp(QMainWindow):
         
         banner_layout.addStretch()
 
+        lbl_inv = QLabel("Invoice No:")
+        lbl_inv.setStyleSheet("font-size: 13px; font-weight: bold; color: #f8fafc;")
+        banner_layout.addWidget(lbl_inv)
+
+        self.agency_inv_spin = QSpinBox()
+        self.agency_inv_spin.setRange(1, 9999999)
+        self.agency_inv_spin.setFixedWidth(110)
+        self.agency_inv_spin.setToolTip("Manually enter or override invoice number for this agency")
+        self.agency_inv_spin.valueChanged.connect(self.on_agency_inv_no_changed)
+        banner_layout.addWidget(self.agency_inv_spin)
+
+        banner_layout.addSpacing(10)
+
         self.btn_view_current_pdf = QPushButton("👁️ View PDF Invoice")
         self.btn_view_current_pdf.setObjectName("viewPdfBtn")
         self.btn_view_current_pdf.clicked.connect(self.view_current_agency_pdf)
         banner_layout.addWidget(self.btn_view_current_pdf)
 
-        self.btn_send_current_agency = QPushButton("📱 Send WhatsApp")
+        self.btn_send_current_agency = QPushButton("📱 Auto-Send")
         self.btn_send_current_agency.setObjectName("singleSendBtn")
+        self.btn_send_current_agency.setToolTip("Automated background send via WhatsApp Web")
         self.btn_send_current_agency.clicked.connect(self.send_current_agency_whatsapp)
         banner_layout.addWidget(self.btn_send_current_agency)
+
+        self.btn_share_current_agency = QPushButton("📤 Share App")
+        self.btn_share_current_agency.setObjectName("shareBtn")
+        self.btn_share_current_agency.setToolTip("Open in native WhatsApp App (Copies PDF to clipboard for Ctrl+V)")
+        self.btn_share_current_agency.clicked.connect(self.share_current_agency_whatsapp)
+        banner_layout.addWidget(self.btn_share_current_agency)
+
+        self.btn_edit_agency = QPushButton("✏️ Edit Agency Info")
+        self.btn_edit_agency.setObjectName("editAgencyBtn")
+        self.btn_edit_agency.setToolTip("Edit agency name, PAN, GST, address, vendor code")
+        self.btn_edit_agency.clicked.connect(self.open_edit_agency_dialog)
+        banner_layout.addWidget(self.btn_edit_agency)
 
         self.btn_add_vehicle = QPushButton("➕ Add Vehicle")
         self.btn_add_vehicle.setObjectName("addBtn")
@@ -699,7 +865,7 @@ class InvoiceAutomationApp(QMainWindow):
         self.agency_vehicle_table = QTableWidget()
         self.agency_vehicle_table.setColumnCount(5)
         self.agency_vehicle_table.setHorizontalHeaderLabels([
-            "Sl No", "Vehicle Reg Number", "Rate per Load (₹)", "Current Loads", "Next Month Loads (Edit Here)"
+            "Sl No", "Vehicle Reg Number", "Rate per Load (₹) (Edit)", "Current Loads", "Next Month Loads (Edit Here)"
         ])
         self.agency_vehicle_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.agency_vehicle_table.cellChanged.connect(self.on_load_cell_changed)
@@ -743,7 +909,20 @@ class InvoiceAutomationApp(QMainWindow):
         self.contacts_table.setColumnCount(3)
         self.contacts_table.setHorizontalHeaderLabels(["Agency Sheet Name", "Full Agency Name", "WhatsApp Numbers (Multiple Allowed)"])
         self.contacts_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.contacts_table.cellChanged.connect(self.on_contacts_cell_changed)
         layout.addWidget(self.contacts_table)
+
+    def on_contacts_cell_changed(self, row, col):
+        if col != 2:
+            return
+        s_item = self.contacts_table.item(row, 0)
+        a_item = self.contacts_table.item(row, 1)
+        p_item = self.contacts_table.item(row, 2)
+        if s_item and p_item:
+            s_name = s_item.text()
+            a_name = a_item.text() if a_item else ""
+            phone_input = p_item.text().strip()
+            self.contacts_mgr.update_phone(s_name, phone_input, a_name)
 
     def setup_dispatch_tab(self):
         layout = QVBoxLayout(self.tab_dispatch)
@@ -780,11 +959,12 @@ class InvoiceAutomationApp(QMainWindow):
 
         # Summary Table
         self.dispatch_table = QTableWidget()
-        self.dispatch_table.setColumnCount(7)
+        self.dispatch_table.setColumnCount(8)
         self.dispatch_table.setHorizontalHeaderLabels([
-            "Agency", "Inv No", "Grand Total (₹)", "WhatsApp Numbers", "PDF Invoice", "WhatsApp Status", "Action"
+            "Agency", "Inv No", "Grand Total (₹)", "WhatsApp Numbers", "PDF Invoice", "WhatsApp Status", "Auto-Send", "Share App"
         ])
         self.dispatch_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.dispatch_table.cellChanged.connect(self.on_dispatch_cell_changed)
         splitter.addWidget(self.dispatch_table)
 
         # Log Console
@@ -873,10 +1053,103 @@ class InvoiceAutomationApp(QMainWindow):
                     max_inv = max(max_inv, int(a['invoice_no']))
 
             if max_inv > 0:
+                self.starting_inv_spin.blockSignals(True)
                 self.starting_inv_spin.setValue(max_inv + 1)
+                self.starting_inv_spin.blockSignals(False)
 
+            # Pre-populate default agency_inv_map
+            base_inv = self.starting_inv_spin.value()
+            self.agency_inv_map = {}
+            for idx, a in enumerate(self.parsed_agencies):
+                s_name = a['sheet_name']
+                self.agency_inv_map[s_name] = base_inv + idx
+
+            # Restore saved state if exists
+            saved_state = self.state_mgr.load_state()
+            if saved_state:
+                # Top controls
+                if saved_state.get('target_month') and hasattr(self, 'month_edit'):
+                    self.month_edit.blockSignals(True)
+                    self.month_edit.setText(saved_state['target_month'])
+                    self.month_edit.blockSignals(False)
+                if saved_state.get('invoice_date') and hasattr(self, 'date_edit'):
+                    q_date = QDate.fromString(saved_state['invoice_date'], "yyyy-MM-dd")
+                    if q_date.isValid():
+                        self.date_edit.blockSignals(True)
+                        self.date_edit.setDate(q_date)
+                        self.date_edit.blockSignals(False)
+                if saved_state.get('starting_inv_no') and hasattr(self, 'starting_inv_spin'):
+                    self.starting_inv_spin.blockSignals(True)
+                    self.starting_inv_spin.setValue(int(saved_state['starting_inv_no']))
+                    self.starting_inv_spin.blockSignals(False)
+
+                # Custom agencies
+                self.custom_agencies_list = saved_state.get('custom_agencies', [])
+                for ca in self.custom_agencies_list:
+                    s_name = ca['sheet_name']
+                    if not any(a['sheet_name'] == s_name for a in self.parsed_agencies):
+                        self.parsed_agencies.append(dict(ca))
+                    self.agency_meta_map[s_name] = {
+                        'agency_name': ca.get('agency_name', s_name),
+                        'pan_no': ca.get('pan_no', ''),
+                        'vendor_code': ca.get('vendor_code', ''),
+                        'gst_no': ca.get('gst_no', ''),
+                        'gstin': ca.get('gstin', ''),
+                        'address': ca.get('address', ['', '', ''])
+                    }
+                    if s_name not in self.agency_vehicles_data:
+                        self.agency_vehicles_data[s_name] = [dict(v) for v in ca.get('vehicles', [])]
+
+                # Agency metadata overrides
+                meta_overrides = saved_state.get('agency_meta_overrides', {})
+                for s_name, meta in meta_overrides.items():
+                    if s_name in self.agency_meta_map:
+                        self.agency_meta_map[s_name].update(meta)
+                    else:
+                        self.agency_meta_map[s_name] = dict(meta)
+                    for a in self.parsed_agencies:
+                        if a['sheet_name'] == s_name:
+                            a.update(meta)
+                            break
+
+                # Agency loads and rates overrides
+                loads_data = saved_state.get('agency_loads', {})
+                for s_name, v_list in loads_data.items():
+                    self.agency_vehicles_data[s_name] = [dict(v) for v in v_list]
+                    for a in self.parsed_agencies:
+                        if a['sheet_name'] == s_name:
+                            a['vehicles'] = [dict(v) for v in v_list]
+                            break
+
+                # Agency invoice numbers overrides
+                saved_inv_map = saved_state.get('agency_inv_map', {})
+                for s_name, inv in saved_inv_map.items():
+                    self.agency_inv_map[s_name] = int(inv)
+
+            self.contacts_mgr.sync_agencies(self.parsed_agencies)
             self.populate_agency_list()
             self.populate_contacts_table()
+
+            # Pre-populate dispatch table with loaded agencies so user can share immediately
+            target_month = self.month_edit.text().strip().upper() if hasattr(self, 'month_edit') else ""
+            if not target_month:
+                target_month = datetime.now().strftime("%B %Y").upper()
+            month_desc = f"LPG CYLINDER LOADING AND UNLOADING CHARGES FOR THE MONTH {target_month}"
+            initial_agencies = []
+            curr_base = self.starting_inv_spin.value()
+            for idx, a in enumerate(self.parsed_agencies):
+                s_name = a['sheet_name']
+                v_list = self.agency_vehicles_data.get(s_name, a.get('vehicles', []))
+                subtotal = sum(float(v.get('rate', 0.0)) * float(v.get('loads', 0.0)) for v in v_list)
+                g_total = round(subtotal * 1.18, 2)
+                initial_agencies.append({
+                    'sheet_name': s_name,
+                    'agency_name': self.agency_meta_map.get(s_name, {}).get('agency_name', a['agency_name']),
+                    'invoice_no': self.agency_inv_map.get(s_name, curr_base + idx),
+                    'grand_total': g_total,
+                    'month_desc': month_desc
+                })
+            self.populate_dispatch_table(initial_agencies, [])
             self.log(f"Loaded {len(self.parsed_agencies)} agency invoice sheets successfully.")
 
         except Exception as e:
@@ -919,7 +1192,7 @@ class InvoiceAutomationApp(QMainWindow):
                 'address': data['address']
             }
 
-            self.parsed_agencies.append({
+            new_record = {
                 'sheet_name': s_name,
                 'agency_name': data['agency_name'],
                 'pan_no': data['pan_no'],
@@ -932,7 +1205,9 @@ class InvoiceAutomationApp(QMainWindow):
                 'month_desc': f"LPG CYLINDER LOADING AND UNLOADING CHARGES FOR THE MONTH {self.month_edit.text().strip().upper()}",
                 'vehicles': v_list,
                 'total': 0, 'sgst': 0, 'cgst': 0, 'grand_total': 0, 'in_words': ''
-            })
+            }
+            self.parsed_agencies.append(new_record)
+            self.custom_agencies_list.append(new_record)
 
             # Register phone in contacts
             if data['phone']:
@@ -948,6 +1223,7 @@ class InvoiceAutomationApp(QMainWindow):
                     self.agency_list_widget.setCurrentItem(item)
                     break
 
+            self.save_app_state()
             self.log(f"Successfully created new agency profile: {data['agency_name']} ({s_name}).")
             QMessageBox.information(self, "Success", f"New Agency '{data['agency_name']}' created successfully!")
 
@@ -979,6 +1255,21 @@ class InvoiceAutomationApp(QMainWindow):
         if agency_info:
             self.lbl_agency_title.setText(f"{agency_info['agency_name']}  (Sheet: {sheet_name})")
 
+        if hasattr(self, 'agency_inv_spin'):
+            inv_no = self.agency_inv_map.get(sheet_name)
+            if inv_no is None:
+                base_inv = self.starting_inv_spin.value() if hasattr(self, 'starting_inv_spin') else 101
+                idx = 0
+                for i, a in enumerate(self.parsed_agencies):
+                    if a['sheet_name'] == sheet_name:
+                        idx = i
+                        break
+                inv_no = base_inv + idx
+                self.agency_inv_map[sheet_name] = inv_no
+            self.agency_inv_spin.blockSignals(True)
+            self.agency_inv_spin.setValue(int(inv_no))
+            self.agency_inv_spin.blockSignals(False)
+
         self.display_agency_vehicles(sheet_name)
 
     def display_agency_vehicles(self, sheet_name):
@@ -1003,10 +1294,15 @@ class InvoiceAutomationApp(QMainWindow):
             item_vno.setForeground(QColor("#f8fafc"))
             self.agency_vehicle_table.setItem(r_idx, 1, item_vno)
 
-            # Rate
+            # Rate (EDITABLE CELL WITH HIGH-CONTRAST CYAN TEXT ON DARK BG)
             item_rate = QTableWidgetItem(f"{float(v['rate']):.2f}")
-            item_rate.setFlags(item_rate.flags() ^ Qt.ItemFlag.ItemIsEditable)
-            item_rate.setForeground(QColor("#f8fafc"))
+            item_rate.setBackground(QColor("#0f172a"))
+            item_rate.setForeground(QColor("#38bdf8"))
+            font_rate = QFont()
+            font_rate.setBold(True)
+            font_rate.setPointSize(10)
+            item_rate.setFont(font_rate)
+            item_rate.setToolTip("Double click to edit vehicle rate per load")
             self.agency_vehicle_table.setItem(r_idx, 2, item_rate)
 
             # Current Loads
@@ -1023,6 +1319,7 @@ class InvoiceAutomationApp(QMainWindow):
             font.setBold(True)
             font.setPointSize(10)
             item_next.setFont(font)
+            item_next.setToolTip("Double click to edit next month load count")
             self.agency_vehicle_table.setItem(r_idx, 4, item_next)
 
             subtotal += float(v['loads']) * float(v['rate'])
@@ -1034,22 +1331,148 @@ class InvoiceAutomationApp(QMainWindow):
         self.agency_vehicle_table.blockSignals(False)
 
     def on_load_cell_changed(self, row, col):
-        if col != 4 or not self.current_selected_sheet:
+        if col not in (2, 4) or not self.current_selected_sheet:
             return
 
-        item = self.agency_vehicle_table.item(row, 4)
+        item = self.agency_vehicle_table.item(row, col)
         if not item:
             return
 
-        try:
-            new_loads = float(item.text().strip())
-        except ValueError:
-            new_loads = 0.0
-
         v_list = self.agency_vehicles_data.get(self.current_selected_sheet, [])
-        if row < len(v_list):
-            v_list[row]['loads'] = new_loads
-            self.display_agency_vehicles(self.current_selected_sheet)
+        if row >= len(v_list):
+            return
+
+        try:
+            val = float(item.text().strip())
+        except ValueError:
+            val = 0.0
+
+        if col == 2:
+            v_list[row]['rate'] = val
+        elif col == 4:
+            v_list[row]['loads'] = val
+
+        v_list[row]['total_amount'] = v_list[row]['rate'] * v_list[row]['loads']
+
+        # Update parsed_agencies vehicles copy if present
+        for a in self.parsed_agencies:
+            if a['sheet_name'] == self.current_selected_sheet:
+                a['vehicles'] = [dict(v) for v in v_list]
+                break
+
+        self.display_agency_vehicles(self.current_selected_sheet)
+
+        # Update grand total in dispatch table row if present
+        if hasattr(self, 'dispatch_table'):
+            subtotal = sum(float(v.get('rate', 0.0)) * float(v.get('loads', 0.0)) for v in v_list)
+            g_total = round(subtotal * 1.18, 2)
+            self.dispatch_table.blockSignals(True)
+            for r in range(self.dispatch_table.rowCount()):
+                s_item = self.dispatch_table.item(r, 0)
+                agency_meta = self.agency_meta_map.get(self.current_selected_sheet, {})
+                a_name = agency_meta.get('agency_name', self.current_selected_sheet)
+                if s_item and (s_item.data(Qt.ItemDataRole.UserRole) == self.current_selected_sheet or s_item.text() in (self.current_selected_sheet, a_name)):
+                    tot_item = self.dispatch_table.item(r, 2)
+                    if tot_item:
+                        tot_item.setText(f"{g_total:.2f}")
+                    break
+            self.dispatch_table.blockSignals(False)
+
+        self.save_app_state()
+
+    def on_agency_inv_no_changed(self, new_val):
+        """Called when user edits the invoice number for the currently selected agency in Tab 1."""
+        if not self.current_selected_sheet:
+            return
+        self.agency_inv_map[self.current_selected_sheet] = new_val
+
+        # Update Dispatch Table Column 1 for this agency
+        if hasattr(self, 'dispatch_table'):
+            self.dispatch_table.blockSignals(True)
+            for r in range(self.dispatch_table.rowCount()):
+                s_item = self.dispatch_table.item(r, 0)
+                agency_meta = self.agency_meta_map.get(self.current_selected_sheet, {})
+                a_name = agency_meta.get('agency_name', self.current_selected_sheet)
+                if s_item and s_item.text() in (self.current_selected_sheet, a_name):
+                    inv_item = self.dispatch_table.item(r, 1)
+                    if inv_item and inv_item.text() != str(new_val):
+                        inv_item.setText(str(new_val))
+                    break
+            self.dispatch_table.blockSignals(False)
+
+        # Update generated_agency_list if present
+        for a in self.generated_agency_list:
+            if a['sheet_name'] == self.current_selected_sheet:
+                a['invoice_no'] = new_val
+                break
+
+        self.save_app_state()
+
+    def on_starting_inv_changed(self, start_val):
+        """Called when user changes Starting Inv # in top bar."""
+        for idx, a in enumerate(self.parsed_agencies):
+            s_name = a['sheet_name']
+            self.agency_inv_map[s_name] = start_val + idx
+
+        if self.current_selected_sheet and self.current_selected_sheet in self.agency_inv_map:
+            if hasattr(self, 'agency_inv_spin'):
+                self.agency_inv_spin.blockSignals(True)
+                self.agency_inv_spin.setValue(self.agency_inv_map[self.current_selected_sheet])
+                self.agency_inv_spin.blockSignals(False)
+
+        if hasattr(self, 'dispatch_table'):
+            self.dispatch_table.blockSignals(True)
+            for r in range(self.dispatch_table.rowCount()):
+                s_item = self.dispatch_table.item(r, 0)
+                if s_item:
+                    for a in self.parsed_agencies:
+                        if a['agency_name'] == s_item.text() or a['sheet_name'] == s_item.text():
+                            inv_item = self.dispatch_table.item(r, 1)
+                            if inv_item:
+                                inv_item.setText(str(self.agency_inv_map[a['sheet_name']]))
+                            break
+            self.dispatch_table.blockSignals(False)
+
+        self.save_app_state()
+
+    def on_dispatch_cell_changed(self, row, col):
+        """Called when user edits a cell in the Dispatch Table (specifically Column 1: Inv No)."""
+        if col != 1:
+            return
+        s_item = self.dispatch_table.item(row, 0)
+        inv_item = self.dispatch_table.item(row, 1)
+        if not s_item or not inv_item:
+            return
+
+        try:
+            new_inv = int(inv_item.text().strip())
+        except ValueError:
+            return
+
+        sheet_name = None
+        table_text = s_item.text()
+        for a in self.parsed_agencies:
+            if a['agency_name'] == table_text or a['sheet_name'] == table_text:
+                sheet_name = a['sheet_name']
+                break
+        if not sheet_name:
+            sheet_name = table_text
+
+        self.agency_inv_map[sheet_name] = new_inv
+
+        # If currently selected in Tab 1, sync the spinbox
+        if self.current_selected_sheet == sheet_name and hasattr(self, 'agency_inv_spin'):
+            self.agency_inv_spin.blockSignals(True)
+            self.agency_inv_spin.setValue(new_inv)
+            self.agency_inv_spin.blockSignals(False)
+
+        # Update in generated_agency_list if present
+        for a in self.generated_agency_list:
+            if a['sheet_name'] == sheet_name:
+                a['invoice_no'] = new_inv
+                break
+
+        self.save_app_state()
 
     def open_add_vehicle_dialog(self):
         if not self.current_selected_sheet:
@@ -1069,6 +1492,7 @@ class InvoiceAutomationApp(QMainWindow):
             if existing:
                 existing['rate'] = data['rate']
                 existing['loads'] = data['loads']
+                existing['total_amount'] = data['rate'] * data['loads']
             else:
                 v_list.append({
                     'sl': len(v_list) + 1,
@@ -1081,23 +1505,287 @@ class InvoiceAutomationApp(QMainWindow):
 
             self.display_agency_vehicles(self.current_selected_sheet)
             self.populate_agency_list()
+            self.save_app_state()
             self.log(f"Added vehicle {data['vehicle_no']} to agency {self.current_selected_sheet}.")
 
+    def open_edit_agency_dialog(self):
+        """Opens dialog to edit agency name, PAN, GST, address, vendor code, and phone numbers."""
+        if not self.current_selected_sheet:
+            QMessageBox.warning(self, "Warning", "Please select an agency from the left panel first.")
+            return
+
+        try:
+            sheet_name = self.current_selected_sheet
+            meta = dict(self.agency_meta_map.get(sheet_name, {}))
+            meta['sheet_name'] = sheet_name
+            phone_str = self.contacts_mgr.get_phone_str(sheet_name)
+
+            dialog = EditAgencyDialog(meta, phone_str, self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                data = dialog.get_data()
+
+                # 1. Update agency_meta_map
+                self.agency_meta_map[sheet_name] = {
+                    'agency_name': data['agency_name'],
+                    'pan_no': data['pan_no'],
+                    'vendor_code': data['vendor_code'],
+                    'gst_no': data['gst_no'],
+                    'gstin': data['gstin'],
+                    'address': data['address']
+                }
+
+                # 2. Update parsed_agencies entry
+                for a in self.parsed_agencies:
+                    if a['sheet_name'] == sheet_name:
+                        a['agency_name'] = data['agency_name']
+                        a['pan_no'] = data['pan_no']
+                        a['vendor_code'] = data['vendor_code']
+                        a['gst_no'] = data['gst_no']
+                        a['gstin'] = data['gstin']
+                        a['address'] = data['address']
+                        break
+
+                # 3. Update custom_agencies_list if it is in custom agencies
+                for ca in self.custom_agencies_list:
+                    if ca['sheet_name'] == sheet_name:
+                        ca['agency_name'] = data['agency_name']
+                        ca['pan_no'] = data['pan_no']
+                        ca['vendor_code'] = data['vendor_code']
+                        ca['gst_no'] = data['gst_no']
+                        ca['gstin'] = data['gstin']
+                        ca['address'] = data['address']
+                        break
+
+                # 4. Update generated_agency_list if present
+                for ga in self.generated_agency_list:
+                    if ga['sheet_name'] == sheet_name:
+                        ga['agency_name'] = data['agency_name']
+                        ga['pan_no'] = data['pan_no']
+                        ga['vendor_code'] = data['vendor_code']
+                        ga['gst_no'] = data['gst_no']
+                        ga['gstin'] = data['gstin']
+                        ga['address'] = data['address']
+                        break
+
+                # 5. Update contacts manager phone
+                self.contacts_mgr.update_phone(sheet_name, data['phone'], data['agency_name'])
+
+                # 6. Refresh UI components
+                self.lbl_agency_title.setText(f"{data['agency_name']}  (Sheet: {sheet_name})")
+                
+                # Refresh agency list widget items
+                for i in range(self.agency_list_widget.count()):
+                    item = self.agency_list_widget.item(i)
+                    if item.data(Qt.ItemDataRole.UserRole) == sheet_name:
+                        v_count = len(self.agency_vehicles_data.get(sheet_name, []))
+                        item.setText(f"{data['agency_name']} ({v_count} vehicles)")
+                        break
+
+                # Refresh contacts table
+                self.populate_contacts_table()
+
+                # Refresh dispatch table row if present
+                if hasattr(self, 'dispatch_table'):
+                    self.dispatch_table.blockSignals(True)
+                    for r in range(self.dispatch_table.rowCount()):
+                        s_item = self.dispatch_table.item(r, 0)
+                        if s_item and (s_item.data(Qt.ItemDataRole.UserRole) == sheet_name or s_item.text() in (sheet_name, meta.get('agency_name', ''))):
+                            s_item.setText(data['agency_name'])
+                            s_item.setData(Qt.ItemDataRole.UserRole, sheet_name)
+                            phone_item = self.dispatch_table.item(r, 3)
+                            if phone_item:
+                                phones = self.contacts_mgr.get_phones(sheet_name)
+                                phone_display = ", ".join(phones) if phones else "No Phone"
+                                if len(phones) > 1:
+                                    phone_display += f" ({len(phones)} contacts)"
+                                phone_item.setText(phone_display)
+                            break
+                    self.dispatch_table.blockSignals(False)
+
+                # 7. Persist changes
+                self.save_app_state()
+                self.log(f"Updated agency info for {data['agency_name']} ({sheet_name}).")
+                QMessageBox.information(self, "Agency Info Updated", f"Agency details for '{data['agency_name']}' updated successfully!")
+        except Exception as e:
+            self.log(f"Error opening agency edit dialog: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to open agency edit dialog:\n{str(e)}")
+
+    def save_app_state(self):
+        """Persists current working state to app_state.json so user edits are retained across sessions."""
+        try:
+            target_m = self.month_edit.text().strip().upper() if hasattr(self, 'month_edit') else ""
+            date_s = self.date_edit.date().toString("yyyy-MM-dd") if hasattr(self, 'date_edit') else ""
+            start_i = self.starting_inv_spin.value() if hasattr(self, 'starting_inv_spin') else 101
+
+            state = {
+                'target_month': target_m,
+                'invoice_date': date_s,
+                'starting_inv_no': start_i,
+                'agency_inv_map': self.agency_inv_map,
+                'agency_meta_overrides': self.agency_meta_map,
+                'agency_loads': self.agency_vehicles_data,
+                'custom_agencies': self.custom_agencies_list
+            }
+            self.state_mgr.save_state(state)
+        except Exception as e:
+            self.log(f"Warning: Failed to save application state: {str(e)}")
+
+    def reset_to_excel_defaults(self):
+        """Resets all overrides and restores default data from master Excel workbook."""
+        reply = QMessageBox.question(
+            self, "Reset to Master Defaults",
+            "Are you sure you want to reset all data back to the default master Excel workbook?\n\n"
+            "This will clear all edited loads, custom rates, added agencies, and manual overrides.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.state_mgr.clear_state()
+            self.custom_agencies_list = []
+            self.agency_inv_map = {}
+            self.load_master_file()
+            self.log("Reset all data to default Excel workbook contents.")
+            QMessageBox.information(self, "Reset Complete", "All data has been reset to the default master Excel workbook.")
+
+    def get_or_generate_agency_pdf(self, sheet_name, force_regenerate=True):
+        """
+        Retrieves or on-demand generates the PDF invoice for a single agency.
+        Guarantees that the PDF exists and is up-to-date with current GUI values
+        without requiring batch generation of all agencies.
+        """
+        if not sheet_name:
+            return None, None
+
+        # 1. Commit active editor in agency_vehicle_table if this agency is currently viewed
+        if self.current_selected_sheet == sheet_name and hasattr(self, 'agency_vehicle_table') and self.agency_vehicle_table.rowCount() > 0:
+            for r in range(self.agency_vehicle_table.rowCount()):
+                rate_item = self.agency_vehicle_table.item(r, 2)
+                loads_item = self.agency_vehicle_table.item(r, 4)
+                v_list = self.agency_vehicles_data.get(sheet_name, [])
+                if r < len(v_list):
+                    if rate_item:
+                        try:
+                            v_list[r]['rate'] = float(rate_item.text().strip())
+                        except ValueError:
+                            pass
+                    if loads_item:
+                        try:
+                            v_list[r]['loads'] = float(loads_item.text().strip())
+                        except ValueError:
+                            pass
+                    v_list[r]['total_amount'] = v_list[r]['rate'] * v_list[r]['loads']
+            self.save_app_state()
+
+        # 2. If not forcing regeneration, check existing cache
+        if not force_regenerate:
+            existing_pdf = next((p for p in self.generated_pdf_list if p['sheet_name'] == sheet_name), None)
+            existing_agency = next((a for a in self.generated_agency_list if a['sheet_name'] == sheet_name), None)
+            if existing_pdf and existing_agency and os.path.exists(existing_pdf['pdf_path']):
+                return existing_agency, existing_pdf['pdf_path']
+
+        # 3. Determine parameters for this agency
+        target_month = self.month_edit.text().strip().upper() if hasattr(self, 'month_edit') else ""
+        if not target_month:
+            target_month = datetime.now().strftime("%B %Y").upper()
+
+        date_str = self.date_edit.date().toString("dd-MM-yyyy") if hasattr(self, 'date_edit') else datetime.now().strftime("%d-%m-%Y")
+
+        # Determine invoice number
+        if sheet_name in self.agency_inv_map:
+            inv_no = self.agency_inv_map[sheet_name]
+        else:
+            existing_agency = next((a for a in self.generated_agency_list if a['sheet_name'] == sheet_name), None)
+            if existing_agency and existing_agency.get('invoice_no'):
+                inv_no = existing_agency['invoice_no']
+            else:
+                base_inv = self.starting_inv_spin.value() if hasattr(self, 'starting_inv_spin') else 101
+                idx = 0
+                for i, a in enumerate(self.parsed_agencies):
+                    if a['sheet_name'] == sheet_name:
+                        idx = i
+                        break
+                inv_no = base_inv + idx
+            self.agency_inv_map[sheet_name] = inv_no
+
+        # Get vehicles and meta
+        vehicles = self.agency_vehicles_data.get(sheet_name)
+        meta = self.agency_meta_map.get(sheet_name)
+
+        mgr = ExcelManager(self.master_excel_path)
+        agency_data = mgr.build_agency_invoice_data(
+            sheet_name=sheet_name,
+            target_month_year=target_month,
+            target_date_str=date_str,
+            invoice_no=inv_no,
+            vehicles_list=vehicles,
+            agency_meta=meta
+        )
+
+        pdf_dir = os.path.join(self.output_dir, f"Invoices_{target_month.replace(' ', '_')}")
+        os.makedirs(pdf_dir, exist_ok=True)
+        self.current_pdf_dir = pdf_dir
+
+        pdf_gen = PDFGenerator(pdf_dir)
+        pdf_path = pdf_gen.generate_agency_pdf(agency_data)
+
+        pdf_info = {
+            'sheet_name': sheet_name,
+            'agency_name': agency_data['agency_name'],
+            'invoice_no': inv_no,
+            'pdf_path': pdf_path
+        }
+
+        # Cache in memory
+        idx_exist = next((i for i, a in enumerate(self.generated_agency_list) if a['sheet_name'] == sheet_name), None)
+        if idx_exist is not None:
+            self.generated_agency_list[idx_exist] = agency_data
+            self.generated_pdf_list[idx_exist] = pdf_info
+        else:
+            self.generated_agency_list.append(agency_data)
+            self.generated_pdf_list.append(pdf_info)
+
+        # If Dispatch table has rows, update this row
+        self.dispatch_table.blockSignals(True)
+        for r in range(self.dispatch_table.rowCount()):
+            s_name_item = self.dispatch_table.item(r, 0)
+            if s_name_item and (s_name_item.text() == agency_data['agency_name'] or s_name_item.text() == sheet_name):
+                inv_item = QTableWidgetItem(str(inv_no))
+                inv_item.setBackground(QColor("#0f172a"))
+                inv_item.setForeground(QColor("#38bdf8"))
+                font_inv = QFont()
+                font_inv.setBold(True)
+                inv_item.setFont(font_inv)
+                inv_item.setToolTip("Click to manually edit invoice number")
+                self.dispatch_table.setItem(r, 1, inv_item)
+                self.dispatch_table.setItem(r, 2, QTableWidgetItem(f"{agency_data['grand_total']:.2f}"))
+                view_btn = QPushButton(f"👁️ {os.path.basename(pdf_path)}")
+                view_btn.setObjectName("viewPdfBtn")
+                view_btn.clicked.connect(lambda _, p=pdf_path: self.open_pdf_file(p))
+                self.dispatch_table.setCellWidget(r, 4, view_btn)
+                break
+        self.dispatch_table.blockSignals(False)
+
+        self.log(f"Generated single invoice PDF for {agency_data['agency_name']}: {os.path.basename(pdf_path)}")
+        return agency_data, pdf_path
+
     def view_current_agency_pdf(self):
-        """Opens the generated PDF invoice for the currently selected agency."""
+        """Opens the generated PDF invoice for the currently selected agency, generating on-the-fly if needed."""
         if not self.current_selected_sheet:
             QMessageBox.warning(self, "Warning", "Please select an agency first.")
             return
 
-        if not self.generated_pdf_list:
-            QMessageBox.warning(self, "PDF Not Generated", "Please click '1. Generate All PDFs & Excel' first to create the PDF invoice.")
-            return
-
-        pdf_info = next((p for p in self.generated_pdf_list if p['sheet_name'] == self.current_selected_sheet), None)
-        if pdf_info and os.path.exists(pdf_info['pdf_path']):
-            self.open_pdf_file(pdf_info['pdf_path'])
+        agency_data, pdf_path = self.get_or_generate_agency_pdf(self.current_selected_sheet)
+        if pdf_path and os.path.exists(pdf_path):
+            self.open_pdf_file(pdf_path)
         else:
-            QMessageBox.warning(self, "File Not Found", f"PDF invoice for {self.current_selected_sheet} not found.")
+            QMessageBox.warning(self, "File Not Found", f"Failed to generate PDF invoice for {self.current_selected_sheet}.")
+
+    def view_specific_agency_pdf(self, sheet_name):
+        """Generates and opens PDF invoice for a specific agency."""
+        agency_data, pdf_path = self.get_or_generate_agency_pdf(sheet_name)
+        if pdf_path and os.path.exists(pdf_path):
+            self.open_pdf_file(pdf_path)
+        else:
+            QMessageBox.warning(self, "Error", f"Failed to generate PDF invoice for {sheet_name}.")
 
     def open_pdf_file(self, pdf_path):
         """Launches the system default PDF viewer for the given PDF path."""
@@ -1123,20 +1811,14 @@ class InvoiceAutomationApp(QMainWindow):
             self.log(f"Error opening folder: {str(e)}")
 
     def send_current_agency_whatsapp(self):
-        """Sends WhatsApp invoice for the currently selected agency in Tab 1."""
+        """Sends WhatsApp invoice for the currently selected agency in Tab 1, generating on-the-fly if needed."""
         if not self.current_selected_sheet:
             QMessageBox.warning(self, "Warning", "Please select an agency first.")
             return
 
-        if not self.generated_agency_list or not self.generated_pdf_list:
-            QMessageBox.warning(self, "PDFs Not Generated", "Please click '1. Generate All PDFs & Excel' first to generate current invoices.")
-            return
-
-        agency_info = next((a for a in self.generated_agency_list if a['sheet_name'] == self.current_selected_sheet), None)
-        pdf_info = next((p for p in self.generated_pdf_list if p['sheet_name'] == self.current_selected_sheet), None)
-
-        if not agency_info or not pdf_info:
-            QMessageBox.warning(self, "Warning", "Invoice not generated for this agency yet.")
+        agency_data, pdf_path = self.get_or_generate_agency_pdf(self.current_selected_sheet)
+        if not agency_data or not pdf_path or not os.path.exists(pdf_path):
+            QMessageBox.warning(self, "Error", f"Could not generate invoice PDF for {self.current_selected_sheet}.")
             return
 
         row_idx = 0
@@ -1147,16 +1829,239 @@ class InvoiceAutomationApp(QMainWindow):
 
         item = {
             'row_idx': row_idx,
-            'agency_name': agency_info['agency_name'],
+            'sheet_name': self.current_selected_sheet,
+            'agency_name': agency_data['agency_name'],
             'phone': self.contacts_mgr.get_phones(self.current_selected_sheet),
-            'inv_no': agency_info['invoice_no'],
-            'month_desc': agency_info['month_desc'],
-            'pdf_path': pdf_info['pdf_path']
+            'inv_no': agency_data['invoice_no'],
+            'month_desc': agency_data['month_desc'],
+            'pdf_path': pdf_path
         }
 
         self.send_single_agency_whatsapp(item)
 
+    def share_current_agency_whatsapp(self):
+        """Shares invoice for currently selected agency in Tab 1 directly via native WhatsApp App, generating on-the-fly if needed."""
+        if not self.current_selected_sheet:
+            QMessageBox.warning(self, "Warning", "Please select an agency first.")
+            return
+
+        agency_data, pdf_path = self.get_or_generate_agency_pdf(self.current_selected_sheet)
+        if not agency_data or not pdf_path or not os.path.exists(pdf_path):
+            QMessageBox.warning(self, "Error", f"Failed to generate invoice PDF for {self.current_selected_sheet}.")
+            return
+
+        row_idx = None
+        for i, a in enumerate(self.generated_agency_list):
+            if a['sheet_name'] == self.current_selected_sheet:
+                row_idx = i
+                break
+
+        item = {
+            'row_idx': row_idx,
+            'sheet_name': self.current_selected_sheet,
+            'agency_name': agency_data['agency_name'],
+            'phone': self.contacts_mgr.get_phones(self.current_selected_sheet),
+            'inv_no': agency_data['invoice_no'],
+            'month_desc': agency_data['month_desc'],
+            'pdf_path': pdf_path
+        }
+
+        self.on_share_button_clicked(item, self.btn_share_current_agency)
+
+    def on_share_button_clicked(self, item, source_widget=None):
+        """
+        Handles the '📤 Share App' button action.
+        - Automatically generates PDF for this agency on-the-fly if needed.
+        - Displays a menu allowing the user to choose:
+          * Send via WhatsApp Web (in default browser - 100% reliable).
+          * Send via WhatsApp Desktop App.
+          * Open Contact Selector in Web or Desktop.
+          * Highlight PDF in Windows Explorer.
+          * Copy PDF to Clipboard.
+        """
+        sheet_name = item.get('sheet_name', '')
+        pdf_path = item.get('pdf_path', '')
+        agency_name = item.get('agency_name', '')
+        inv_no = item.get('inv_no', '')
+        month_desc = item.get('month_desc', '')
+        row_idx = item.get('row_idx')
+
+        # Automatically generate ONLY this agency's PDF if missing or not generated!
+        if (not pdf_path or not os.path.exists(pdf_path)) and sheet_name:
+            agency_data, generated_path = self.get_or_generate_agency_pdf(sheet_name)
+            if generated_path and os.path.exists(generated_path):
+                pdf_path = generated_path
+                item['pdf_path'] = pdf_path
+                if agency_data:
+                    agency_name = agency_data['agency_name']
+                    inv_no = agency_data['invoice_no']
+                    month_desc = agency_data['month_desc']
+                    item['agency_name'] = agency_name
+                    item['inv_no'] = inv_no
+                    item['month_desc'] = month_desc
+
+        if not inv_no and sheet_name:
+            inv_no = self.agency_inv_map.get(sheet_name, '')
+            item['inv_no'] = inv_no
+
+        if not month_desc:
+            target_m = self.month_edit.text().strip().upper() if hasattr(self, 'month_edit') else datetime.now().strftime("%B %Y").upper()
+            month_desc = f"LPG CYLINDER LOADING AND UNLOADING CHARGES FOR THE MONTH {target_m}"
+            item['month_desc'] = month_desc
+
+        if not pdf_path or not os.path.exists(pdf_path):
+            QMessageBox.warning(
+                self, "PDF Generation Failed",
+                f"Could not generate PDF invoice for {agency_name}."
+            )
+            return
+
+        s_name = item.get('sheet_name', '')
+        if s_name:
+            phones = self.contacts_mgr.get_phones(s_name)
+        else:
+            phones = item.get('phone', [])
+            if isinstance(phones, str):
+                phones = [p.strip() for p in phones.split(',') if p.strip()]
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1e293b;
+                color: #f8fafc;
+                border: 1px solid #475569;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 8px 18px;
+                font-size: 13px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #059669;
+                color: #ffffff;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #334155;
+                margin: 4px 8px;
+            }
+        """)
+
+        header_act = menu.addAction(f"📤 Share Invoice: {agency_name} (#{inv_no})")
+        header_act.setEnabled(False)
+        menu.addSeparator()
+
+        if phones:
+            for phone_num in phones:
+                act_web = menu.addAction(f"🌐 Send via WhatsApp Web ({phone_num})")
+                act_web.setToolTip("Opens chat instantly in your web browser with pre-filled message")
+                act_web.triggered.connect(
+                    lambda _, p=phone_num, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
+                    self.execute_direct_share(agency_name, p, i_no, m_desc, p_path, r_i, target="web")
+                )
+
+                act_app = menu.addAction(f"📱 Send via WhatsApp App ({phone_num})")
+                act_app.setToolTip("Opens chat in WhatsApp Desktop app")
+                act_app.triggered.connect(
+                    lambda _, p=phone_num, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
+                    self.execute_direct_share(agency_name, p, i_no, m_desc, p_path, r_i, target="desktop")
+                )
+            menu.addSeparator()
+
+        act_picker_web = menu.addAction("🌐 Open WhatsApp Web (Select Contact)...")
+        act_picker_web.triggered.connect(
+            lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
+            self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="web")
+        )
+
+        act_picker_app = menu.addAction("📱 Open WhatsApp App (Select Contact)...")
+        act_picker_app.triggered.connect(
+            lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
+            self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="desktop")
+        )
+
+        if phones:
+            act_link = menu.addAction("💬 Open via WhatsApp Link (api.whatsapp.com)...")
+            act_link.triggered.connect(
+                lambda _, p=phones[0], i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
+                self.execute_direct_share(agency_name, p, i_no, m_desc, p_path, r_i, target="auto")
+            )
+
+        menu.addSeparator()
+
+        act_explorer = menu.addAction("📂 Highlight PDF in Explorer")
+        act_explorer.triggered.connect(
+            lambda _, p_path=pdf_path: self.highlight_pdf_file(p_path)
+        )
+
+        act_copy = menu.addAction("📋 Copy PDF to Clipboard (for Ctrl+V)")
+        act_copy.triggered.connect(
+            lambda _, p_path=pdf_path: self.copy_pdf_file_to_clipboard(p_path)
+        )
+
+        if source_widget:
+            menu.exec(source_widget.mapToGlobal(source_widget.rect().bottomLeft()))
+        else:
+            menu.exec(QCursor.pos())
+
+    def execute_direct_share(self, agency_name, phone, inv_no, month_desc, pdf_path, row_idx=None, target=None):
+        """
+        Executes direct WhatsApp share via WhatsAppDispatcher:
+        1. Copies PDF to Windows Clipboard (CF_HDROP).
+        2. Opens WhatsApp Web (browser) or Desktop App with pre-filled invoice message.
+        3. Highlights PDF in Explorer.
+        4. Updates status in dispatch table and logs message.
+        """
+        success, msg = self.wa_dispatcher.share_invoice_to_whatsapp(
+            agency_name=agency_name,
+            phone=phone,
+            invoice_no=inv_no,
+            month_desc=month_desc,
+            pdf_path=pdf_path,
+            target=target,
+            open_explorer=True
+        )
+
+        self.log(msg)
+
+        if row_idx is not None and row_idx < self.dispatch_table.rowCount():
+            target_label = f"({phone})" if phone else "(Picker)"
+            dest_badge = "Web" if target == "web" else ("App" if target == "desktop" else "Link")
+            status_item = QTableWidgetItem(f"📤 Shared [{dest_badge}] {target_label}")
+            status_item.setForeground(QColor("#38bdf8"))
+            self.dispatch_table.setItem(row_idx, 5, status_item)
+
+        QMessageBox.information(
+            self, "WhatsApp Share Ready",
+            f"{msg}\n\n"
+            "📋 The PDF invoice has been copied to your clipboard.\n"
+            "👉 In WhatsApp, click the chat text box and press Ctrl + V to attach the PDF invoice."
+        )
+
+    def highlight_pdf_file(self, pdf_path):
+        """Highlights the specified PDF invoice in Windows Explorer."""
+        if pdf_path and os.path.exists(pdf_path):
+            try:
+                subprocess.Popen(f'explorer /select,"{os.path.abspath(pdf_path)}"')
+                self.log(f"Highlighted PDF in Explorer: {pdf_path}")
+            except Exception as e:
+                self.log(f"Error highlighting PDF in Explorer: {str(e)}")
+
+    def copy_pdf_file_to_clipboard(self, pdf_path):
+        """Copies the PDF invoice to Windows clipboard (CF_HDROP)."""
+        if self.wa_dispatcher.copy_pdf_to_clipboard(pdf_path):
+            self.log(f"Copied PDF to Windows clipboard: {os.path.basename(pdf_path)}")
+            QMessageBox.information(
+                self, "Copied",
+                "📋 PDF invoice has been copied to your clipboard!\n\nYou can now press Ctrl+V in WhatsApp to attach it."
+            )
+        else:
+            QMessageBox.warning(self, "Error", "Failed to copy PDF to clipboard.")
+
     def populate_contacts_table(self):
+        self.contacts_table.blockSignals(True)
         self.contacts_table.setRowCount(0)
         for idx, a in enumerate(self.parsed_agencies):
             self.contacts_table.insertRow(idx)
@@ -1178,6 +2083,7 @@ class InvoiceAutomationApp(QMainWindow):
             item_phone.setBackground(QColor("#0f172a"))
             item_phone.setForeground(QColor("#38bdf8"))
             self.contacts_table.setItem(idx, 2, item_phone)
+        self.contacts_table.blockSignals(False)
 
     def save_contacts_from_table(self):
         for r in range(self.contacts_table.rowCount()):
@@ -1201,6 +2107,38 @@ class InvoiceAutomationApp(QMainWindow):
         date_str = self.date_edit.date().toString("dd-MM-yyyy")
         start_inv = self.starting_inv_spin.value()
 
+        # 1. Commit any in-progress cell editor in the vehicle loads table
+        if self.current_selected_sheet and self.agency_vehicle_table.rowCount() > 0:
+            for r in range(self.agency_vehicle_table.rowCount()):
+                rate_item = self.agency_vehicle_table.item(r, 2)
+                loads_item = self.agency_vehicle_table.item(r, 4)
+                v_list = self.agency_vehicles_data.get(self.current_selected_sheet, [])
+                if r < len(v_list):
+                    if rate_item:
+                        try:
+                            v_list[r]['rate'] = float(rate_item.text().strip())
+                        except ValueError:
+                            pass
+                    if loads_item:
+                        try:
+                            v_list[r]['loads'] = float(loads_item.text().strip())
+                        except ValueError:
+                            pass
+                    v_list[r]['total_amount'] = v_list[r]['rate'] * v_list[r]['loads']
+            self.save_app_state()
+
+        # 2. Auto-save all contacts from Tab 2
+        if hasattr(self, 'contacts_table') and self.contacts_table.rowCount() > 0:
+            for r in range(self.contacts_table.rowCount()):
+                s_item = self.contacts_table.item(r, 0)
+                a_item = self.contacts_table.item(r, 1)
+                p_item = self.contacts_table.item(r, 2)
+                if s_item and p_item:
+                    s_name = s_item.text()
+                    a_name = a_item.text() if a_item else ""
+                    phone_input = p_item.text().strip()
+                    self.contacts_mgr.update_phone(s_name, phone_input, a_name)
+
         self.log("Starting Batch Invoice & PDF Generation...")
         self.log(f"Target Month: {target_month} | Date: {date_str} | Starting Inv #: {start_inv}")
 
@@ -1216,16 +2154,20 @@ class InvoiceAutomationApp(QMainWindow):
                 starting_inv_no=start_inv,
                 updated_loads_map=self.agency_vehicles_data,
                 output_file_path=excel_out_path,
-                agency_meta_map=self.agency_meta_map
+                agency_meta_map=self.agency_meta_map,
+                custom_inv_map=self.agency_inv_map
             )
+            for a in self.generated_agency_list:
+                self.agency_inv_map[a['sheet_name']] = a['invoice_no']
+
             saved_excel_path = getattr(mgr, 'last_output_file_path', excel_out_path)
             self.log(f"Saved updated master Excel: {saved_excel_path}")
 
-            # 2. Batch generate PDFs
+            # 2. Batch generate PDFs (clean output folder first so no duplicate PDFs exist)
             pdf_dir = os.path.join(self.output_dir, f"Invoices_{target_month.replace(' ', '_')}")
             self.current_pdf_dir = pdf_dir
             pdf_gen = PDFGenerator(pdf_dir)
-            self.generated_pdf_list = pdf_gen.batch_generate(self.generated_agency_list)
+            self.generated_pdf_list = pdf_gen.batch_generate(self.generated_agency_list, clean_output_dir=True)
             self.log(f"Successfully generated {len(self.generated_pdf_list)} PDF invoices in {pdf_dir}")
 
             # 3. Populate Dispatch Summary Table
@@ -1243,6 +2185,7 @@ class InvoiceAutomationApp(QMainWindow):
 
     def populate_dispatch_table(self, agency_list, pdf_list):
         pdf_map = {p['sheet_name']: p['pdf_path'] for p in pdf_list}
+        self.dispatch_table.blockSignals(True)
         self.dispatch_table.setRowCount(0)
 
         for idx, a in enumerate(agency_list):
@@ -1256,34 +2199,51 @@ class InvoiceAutomationApp(QMainWindow):
             pdf_path = pdf_map.get(s_name, '')
 
             item_aname = QTableWidgetItem(a['agency_name'])
+            item_aname.setData(Qt.ItemDataRole.UserRole, s_name)
+            item_aname.setFlags(item_aname.flags() ^ Qt.ItemFlag.ItemIsEditable)
             item_aname.setForeground(QColor("#f8fafc"))
             self.dispatch_table.setItem(idx, 0, item_aname)
 
-            item_inv = QTableWidgetItem(str(a['invoice_no']))
-            item_inv.setForeground(QColor("#f8fafc"))
+            inv_no_val = self.agency_inv_map.get(s_name, a['invoice_no'])
+            item_inv = QTableWidgetItem(str(inv_no_val))
+            item_inv.setBackground(QColor("#0f172a"))
+            item_inv.setForeground(QColor("#38bdf8"))
+            font_inv = QFont()
+            font_inv.setBold(True)
+            item_inv.setFont(font_inv)
+            item_inv.setToolTip("Click to manually edit invoice number")
             self.dispatch_table.setItem(idx, 1, item_inv)
 
             item_total = QTableWidgetItem(f"{a['grand_total']:.2f}")
+            item_total.setFlags(item_total.flags() ^ Qt.ItemFlag.ItemIsEditable)
             item_total.setForeground(QColor("#f8fafc"))
             self.dispatch_table.setItem(idx, 2, item_total)
 
             item_phone = QTableWidgetItem(phone_display)
+            item_phone.setFlags(item_phone.flags() ^ Qt.ItemFlag.ItemIsEditable)
             item_phone.setForeground(QColor("#38bdf8") if phones else QColor("#ef4444"))
             self.dispatch_table.setItem(idx, 3, item_phone)
 
             # Interactive View PDF Button Column
-            view_btn = QPushButton(f"👁️ {os.path.basename(pdf_path)}")
-            view_btn.setObjectName("viewPdfBtn")
-            view_btn.clicked.connect(lambda _, path=pdf_path: self.open_pdf_file(path))
+            if pdf_path and os.path.exists(pdf_path):
+                btn_label = f"👁️ {os.path.basename(pdf_path)}"
+                view_btn = QPushButton(btn_label)
+                view_btn.setObjectName("viewPdfBtn")
+                view_btn.clicked.connect(lambda _, path=pdf_path: self.open_pdf_file(path))
+            else:
+                view_btn = QPushButton("👁️ View PDF")
+                view_btn.setObjectName("viewPdfBtn")
+                view_btn.clicked.connect(lambda _, sn=s_name: self.view_specific_agency_pdf(sn))
             self.dispatch_table.setCellWidget(idx, 4, view_btn)
 
             item_status = QTableWidgetItem("Ready to Send" if phones else "Missing Phone")
             item_status.setForeground(QColor("#e2e8f0") if phones else QColor("#ef4444"))
             self.dispatch_table.setItem(idx, 5, item_status)
 
-            # Individual Send Action Button
-            send_btn = QPushButton("📱 Send")
+            # Individual Auto-Send Action Button (WhatsApp Web)
+            send_btn = QPushButton("📱 Auto-Send")
             send_btn.setObjectName("singleSendBtn")
+            send_btn.setToolTip("Automated background send via WhatsApp Web")
             item_dict = {
                 'row_idx': idx,
                 'sheet_name': s_name,
@@ -1295,6 +2255,15 @@ class InvoiceAutomationApp(QMainWindow):
             }
             send_btn.clicked.connect(lambda _, it=item_dict: self.send_single_agency_whatsapp(it))
             self.dispatch_table.setCellWidget(idx, 6, send_btn)
+
+            # Direct Native WhatsApp Share App Button
+            share_btn = QPushButton("📤 Share App")
+            share_btn.setObjectName("shareBtn")
+            share_btn.setToolTip("Open in native WhatsApp App (Copies PDF to clipboard for Ctrl+V)")
+            share_btn.clicked.connect(lambda _, it=item_dict, btn=share_btn: self.on_share_button_clicked(it, btn))
+            self.dispatch_table.setCellWidget(idx, 7, share_btn)
+
+        self.dispatch_table.blockSignals(False)
 
     def send_single_agency_whatsapp(self, item):
         """Sends single agency WhatsApp invoice directly on main GUI thread to avoid greenlet errors."""
@@ -1308,12 +2277,28 @@ class InvoiceAutomationApp(QMainWindow):
                 self.connect_whatsapp_account()
             return
 
+        sheet_name = item.get('sheet_name', '')
+        pdf_path = item.get('pdf_path', '')
+        if (not pdf_path or not os.path.exists(pdf_path)) and sheet_name:
+            agency_data, generated_path = self.get_or_generate_agency_pdf(sheet_name)
+            if generated_path and os.path.exists(generated_path):
+                pdf_path = generated_path
+                item['pdf_path'] = pdf_path
+                if agency_data:
+                    item['agency_name'] = agency_data['agency_name']
+                    item['inv_no'] = agency_data['invoice_no']
+                    item['month_desc'] = agency_data['month_desc']
+
         row_idx = item['row_idx']
         agency_name = item['agency_name']
-        phone = self.contacts_mgr.get_phones(item['sheet_name']) if item.get('sheet_name') else item['phone']
+        phone = self.contacts_mgr.get_phones(sheet_name) if sheet_name else item.get('phone')
 
         if not phone:
             QMessageBox.warning(self, "Missing Phone", f"No phone number configured for {agency_name}. Please add it in the WhatsApp Contacts tab.")
+            return
+
+        if not pdf_path or not os.path.exists(pdf_path):
+            QMessageBox.warning(self, "PDF Not Found", f"Could not generate PDF invoice for {agency_name}.")
             return
 
         # Mark table row as sending
@@ -1407,6 +2392,7 @@ class InvoiceAutomationApp(QMainWindow):
         self.log_console.append(f"[{timestamp}] {message}")
 
     def closeEvent(self, event):
+        self.save_app_state()
         if self.wa_worker:
             try:
                 self.wa_worker.close()

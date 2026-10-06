@@ -52,7 +52,7 @@ class ContactsManager:
                 continue
             digits = ''.join(c for c in p if c.isdigit())
             
-            if len(digits) == 10:
+            if len(digits) == 10 and digits[0] in '6789':
                 digits = f"91{digits}"
             elif len(digits) == 12 and digits.startswith('91') and digits[2] in '6789':
                 pass
@@ -70,9 +70,24 @@ class ContactsManager:
                 result.append(d)
         return result
 
+    def _find_key(self, sheet_name):
+        if not sheet_name:
+            return None
+        if sheet_name in self.contacts:
+            return sheet_name
+        stripped = str(sheet_name).strip()
+        if stripped in self.contacts:
+            return stripped
+        clean = stripped.lower()
+        for k in self.contacts.keys():
+            if str(k).strip().lower() == clean:
+                return k
+        return None
+
     def get_phones(self, sheet_name):
         """Returns a list of phone number strings for an agency."""
-        info = self.contacts.get(sheet_name, {})
+        key = self._find_key(sheet_name)
+        info = self.contacts.get(key, {}) if key else {}
         raw = info.get('phones', info.get('phone', ''))
         return self.parse_phone_list(raw)
 
@@ -83,15 +98,16 @@ class ContactsManager:
 
     def update_phone(self, sheet_name, phone_number_input, agency_name=""):
         """Updates or sets phone numbers for an agency."""
-        if sheet_name not in self.contacts:
-            self.contacts[sheet_name] = {}
+        key = self._find_key(sheet_name) or str(sheet_name).strip()
+        if key not in self.contacts:
+            self.contacts[key] = {}
         
         phone_list = self.parse_phone_list(phone_number_input)
-        self.contacts[sheet_name]['phones'] = phone_list
-        self.contacts[sheet_name]['phone'] = ", ".join(phone_list)
+        self.contacts[key]['phones'] = phone_list
+        self.contacts[key]['phone'] = ", ".join(phone_list)
         
         if agency_name:
-            self.contacts[sheet_name]['agency_name'] = agency_name
+            self.contacts[key]['agency_name'] = agency_name
         self.save_contacts()
 
     def sync_agencies(self, agencies_list):
@@ -99,8 +115,10 @@ class ContactsManager:
         changed = False
         for a in agencies_list:
             s_name = a['sheet_name']
-            if s_name not in self.contacts:
-                self.contacts[s_name] = {
+            key = self._find_key(s_name)
+            if not key:
+                clean_key = str(s_name).strip()
+                self.contacts[clean_key] = {
                     'agency_name': a['agency_name'],
                     'phones': [],
                     'phone': ''
