@@ -51,17 +51,25 @@ An enterprise-grade desktop automation solution designed for **Ananya Enterprise
 
 ---
 
-## 🚀 Quick Start for Windows (No Python Needed!)
+## 🚀 Quick Start for Windows (Zero Setup Required!)
 
-If you just want to run the application on Windows without setting up Python:
+### 🌟 Option 1: 1-Click Desktop Installer (Recommended)
+No extraction, no terminal, no technical setup:
+1. Go to [**GitHub Releases**](https://github.com/NEXUS-888/tax-invoice-automation/releases).
+2. Download **`Ananya_Invoice_Automation_Setup.exe`**.
+3. Double-click the installer and click **"Install Now"**.
+4. The setup wizard automatically:
+   - Installs the app to your user programs folder (no admin permissions required).
+   - Creates a **Desktop Shortcut** ("Ananya Invoice Automation").
+   - Creates a **Start Menu Shortcut**.
+   - Launches the app immediately!
 
-1. **Download the Release:**
-   - Go to [Releases](https://github.com/NEXUS-888/tax-invoice-automation/releases) and download `Ananya_Invoice_Automation_Windows.zip`.
-2. **Extract the ZIP:**
-   - Extract the contents to any folder on your PC.
-3. **Launch the Application:**
-   - Double-click `AnanyaInvoiceAutomation.exe`.
-   - The master template `Ananya Bill.xlsm` is already included and loaded by default!
+### 📦 Option 2: Standalone Portable ZIP
+If you prefer not to install anything and want a portable folder:
+1. Download **`Ananya_Invoice_Automation_Windows.zip`** from [**Releases**](https://github.com/NEXUS-888/tax-invoice-automation/releases).
+2. Extract the folder anywhere on your PC.
+3. Double-click **`AnanyaInvoiceAutomation.exe`**.
+4. The template `Ananya Bill.xlsm` is already included in the folder.
 
 ---
 

@@ -109,8 +109,12 @@ def setup_distribution_folder():
     print("  Created README_SETUP.txt")
 
 
+INSTALLER_EXE_NAME = "Ananya_Invoice_Automation_Setup.exe"
+INSTALLER_EXE_PATH = os.path.join(DIST_DIR, INSTALLER_EXE_NAME)
+
+
 def package_zip():
-    print(f"\n[4/4] Creating distribution ZIP package: {ZIP_NAME}...")
+    print(f"\n[4/5] Creating distribution ZIP package: {ZIP_NAME}...")
     with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(APP_DIST_DIR):
             for file in files:
@@ -121,6 +125,40 @@ def package_zip():
     print(f"  Success! Package created at:\n  {ZIP_PATH} ({zip_size_mb:.2f} MB)")
 
 
+def build_installer_exe():
+    print(f"\n[5/5] Building One-Click Setup Installer: {INSTALLER_EXE_NAME}...")
+    if not os.path.exists(ZIP_PATH):
+        raise FileNotFoundError(f"Zip archive not found for installer bundling: {ZIP_PATH}")
+
+    installer_script = os.path.join(BASE_DIR, "installer_app.py")
+    sep = ";" if os.name == "nt" else ":"
+    data_arg = f"{ZIP_PATH}{sep}."
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--clean",
+        "--noconsole",
+        "--onefile",
+        "--name",
+        "Ananya_Invoice_Automation_Setup",
+        "--add-data",
+        data_arg,
+        "--distpath",
+        DIST_DIR,
+        installer_script
+    ]
+    print(f"  Command: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=BASE_DIR)
+    if result.returncode != 0:
+        raise RuntimeError(f"Installer PyInstaller build failed with exit code {result.returncode}")
+
+    if os.path.exists(INSTALLER_EXE_PATH):
+        exe_size_mb = os.path.getsize(INSTALLER_EXE_PATH) / (1024 * 1024)
+        print(f"  Success! One-Click Installer created at:\n  {INSTALLER_EXE_PATH} ({exe_size_mb:.2f} MB)")
+
+
 def main():
     print("======================================================")
     print(" Building Standalone Ananya Invoice Automation (.exe)")
@@ -129,10 +167,13 @@ def main():
     run_pyinstaller()
     setup_distribution_folder()
     package_zip()
+    build_installer_exe()
     print("\n[DONE] Build and packaging complete!")
-    print(f"Executable directory: {APP_DIST_DIR}")
-    print(f"Downloadable ZIP:     {ZIP_PATH}")
+    print(f"1-Click Setup Installer: {INSTALLER_EXE_PATH}")
+    print(f"Standalone ZIP Package:  {ZIP_PATH}")
+    print(f"Extracted App Folder:    {APP_DIST_DIR}")
 
 
 if __name__ == "__main__":
     main()
+

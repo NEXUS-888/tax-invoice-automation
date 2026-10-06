@@ -47,14 +47,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Ananya_Invoice_Automation_Windows
-          path: dist/Ananya_Invoice_Automation_Windows.zip
+          path: |
+            dist/Ananya_Invoice_Automation_Setup.exe
+            dist/Ananya_Invoice_Automation_Windows.zip
           if-no-files-found: error
 
       - name: Publish GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Ananya_Invoice_Automation_Windows.zip
+          files: |
+            dist/Ananya_Invoice_Automation_Setup.exe
+            dist/Ananya_Invoice_Automation_Windows.zip
           draft: false
           prerelease: false
           generate_release_notes: true

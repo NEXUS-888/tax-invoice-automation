@@ -6,6 +6,8 @@ from unittest.mock import patch, MagicMock
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from PyQt6.QtWidgets import QApplication, QPushButton, QTableWidget, QDialog, QMessageBox
 from PyQt6.QtCore import Qt
 from app_gui import InvoiceAutomationApp, EditAgencyDialog

@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""
+Ananya Enterprises - One-Click Windows Setup Installer
+Extracts application files, creates Desktop & Start Menu shortcuts, and launches the app.
+"""
+
+import os
+import sys
+import shutil
+import zipfile
+import tempfile
+import subprocess
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+
+APP_NAME = "Ananya Invoice Automation"
+PUBLISHER = "Ananya Enterprises"
+EXE_NAME = "AnanyaInvoiceAutomation.exe"
+ZIP_FILENAME = "Ananya_Invoice_Automation_Windows.zip"
+
+
+def get_default_install_dir():
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        local_app_data = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    return os.path.join(local_app_data, "Programs", "AnanyaInvoiceAutomation")
+
+
+def find_zip_package():
+    # 1. PyInstaller onefile temp folder
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        candidate = os.path.join(bundle_dir, ZIP_FILENAME)
+        if os.path.exists(candidate):
+            return candidate
+
+    # 2. Alongside the installer executable / script
+    base_dir = os.path.abspath(os.path.dirname(sys.executable if getattr(sys, "frozen", False) else __file__))
+    candidate = os.path.join(base_dir, ZIP_FILENAME)
+    if os.path.exists(candidate):
+        return candidate
+
+    # 3. In dist/ folder relative to repo root (for dev testing)
+    candidate = os.path.join(base_dir, "dist", ZIP_FILENAME)
+    if os.path.exists(candidate):
+        return candidate
+
+    return None
+
+
+def create_windows_shortcut(target_exe, shortcut_name, working_dir, folder_type="Desktop", desc=""):
+    """
+    Creates a Windows .lnk shortcut using WScript.Shell via a temporary VBScript.
+    folder_type can be 'Desktop' or 'Programs'.
+    """
+    vbs_content = (
+        'Set oWS = WScript.CreateObject("WScript.Shell")\r\n'
+        f'targetFolder = oWS.SpecialFolders("{folder_type}")\r\n'
+        f'Set oLink = oWS.CreateShortcut(targetFolder & "\\{shortcut_name}")\r\n'
+        f'oLink.TargetPath = "{target_exe}"\r\n'
+        f'oLink.WorkingDirectory = "{working_dir}"\r\n'
+        f'oLink.Description = "{desc}"\r\n'
+        'oLink.Save\r\n'
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".vbs", delete=False) as f:
+        f.write(vbs_content)
+        vbs_path = f.name
+
+    try:
+        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        subprocess.run(["cscript", "//nologo", vbs_path], check=True, creationflags=flags)
+        return True
+    except Exception as e:
+        print(f"Error creating shortcut: {e}")
+        return False
+    finally:
+        if os.path.exists(vbs_path):
+            try:
+                os.remove(vbs_path)
+            except Exception:
+                pass
+
+
+def perform_installation(zip_path, target_dir, create_desktop=True, create_start=True, progress_callback=None):
+    os.makedirs(target_dir, exist_ok=True)
+    os.makedirs(os.path.join(target_dir, "data"), exist_ok=True)
+    os.makedirs(os.path.join(target_dir, "output"), exist_ok=True)
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        members = zf.infolist()
+        total_files = len(members)
+
+        for idx, member in enumerate(members):
+            filename = member.filename
+            # Strip top-level directory if present
+            if filename.startswith("AnanyaInvoiceAutomation/") or filename.startswith("AnanyaInvoiceAutomation\\"):
+                rel_parts = filename.split("/", 1) if "/" in filename else filename.split("\\", 1)
+                rel_path = rel_parts[1] if len(rel_parts) > 1 else ""
+            else:
+                rel_path = filename
+
+            if not rel_path or rel_path.endswith("/") or rel_path.endswith("\\"):
+                continue
+
+            dest_path = os.path.join(target_dir, rel_path)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+            with zf.open(member) as src, open(dest_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+
+            if progress_callback:
+                progress = int(((idx + 1) / total_files) * 85)
+                progress_callback(progress, f"Extracting {os.path.basename(rel_path)}...")
+
+    exe_path = os.path.join(target_dir, EXE_NAME)
+
+    if create_desktop:
+        if progress_callback:
+            progress_callback(90, "Creating Desktop shortcut...")
+        create_windows_shortcut(
+            target_exe=exe_path,
+            shortcut_name=f"{APP_NAME}.lnk",
+            working_dir=target_dir,
+            folder_type="Desktop",
+            desc="Ananya Enterprises Invoice Automation & WhatsApp Dispatcher"
+        )
+
+    if create_start:
+        if progress_callback:
+            progress_callback(95, "Creating Start Menu shortcut...")
+        # Create in Start Menu Programs
+        create_windows_shortcut(
+            target_exe=exe_path,
+            shortcut_name=f"{APP_NAME}.lnk",
+            working_dir=target_dir,
+            folder_type="Programs",
+            desc="Ananya Enterprises Invoice Automation & WhatsApp Dispatcher"
+        )
+
+    if progress_callback:
+        progress_callback(100, "Installation Complete!")
+
+    return exe_path
+
+
+class SetupWizard(tk.Tk):
+    def __init__(self, zip_path):
+        super().__init__()
+        self.zip_path = zip_path
+        self.title("Ananya Invoice Automation - Setup Wizard")
+        self.geometry("540x440")
+        self.resizable(False, False)
+
+        # Style
+        self.configure(bg="#F8FAFC")
+
+        # Top Header Banner
+        header_frame = tk.Frame(self, bg="#1E3A8A", height=75)
+        header_frame.pack(fill=tk.X, side=tk.TOP)
+        header_frame.pack_propagate(False)
+
+        title_lbl = tk.Label(
+            header_frame,
+            text="Ananya Invoice Automation",
+            font=("Segoe UI", 15, "bold"),
+            fg="#FFFFFF",
+            bg="#1E3A8A"
+        )
+        title_lbl.pack(anchor="w", padx=20, pady=(12, 2))
+
+        sub_lbl = tk.Label(
+            header_frame,
+            text="One-Click Installation Wizard (Version 1.0.0)",
+            font=("Segoe UI", 9),
+            fg="#93C5FD",
+            bg="#1E3A8A"
+        )
+        sub_lbl.pack(anchor="w", padx=20)
+
+        # Main Body Frame
+        body_frame = tk.Frame(self, bg="#F8FAFC", padx=24, pady=16)
+        body_frame.pack(fill=tk.BOTH, expand=True)
+
+        info_lbl = tk.Label(
+            body_frame,
+            text="The wizard will install Ananya Invoice Automation onto your computer.",
+            font=("Segoe UI", 9),
+            fg="#334155",
+            bg="#F8FAFC"
+        )
+        info_lbl.pack(anchor="w", pady=(0, 12))
+
+        # Target directory group
+        dir_lbl = tk.Label(
+            body_frame,
+            text="Installation Folder:",
+            font=("Segoe UI", 9, "bold"),
+            fg="#1E293B",
+            bg="#F8FAFC"
+        )
+        dir_lbl.pack(anchor="w", pady=(0, 4))
+
+        dir_input_frame = tk.Frame(body_frame, bg="#F8FAFC")
+        dir_input_frame.pack(fill=tk.X, pady=(0, 14))
+
+        self.dir_var = tk.StringVar(value=get_default_install_dir())
+        self.dir_entry = ttk.Entry(dir_input_frame, textvariable=self.dir_var, font=("Segoe UI", 9))
+        self.dir_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+
+        browse_btn = ttk.Button(dir_input_frame, text="Browse...", command=self.on_browse)
+        browse_btn.pack(side=tk.RIGHT, padx=(8, 0))
+
+        # Options
+        self.desktop_var = tk.BooleanVar(value=True)
+        self.start_var = tk.BooleanVar(value=True)
+        self.launch_var = tk.BooleanVar(value=True)
+
+        chk_desktop = ttk.Checkbutton(
+            body_frame,
+            text="Create Desktop Shortcut (Recommended)",
+            variable=self.desktop_var
+        )
+        chk_desktop.pack(anchor="w", pady=3)
+
+        chk_start = ttk.Checkbutton(
+            body_frame,
+            text="Create Start Menu Shortcut",
+            variable=self.start_var
+        )
+        chk_start.pack(anchor="w", pady=3)
+
+        chk_launch = ttk.Checkbutton(
+            body_frame,
+            text="Launch Ananya Invoice Automation immediately after install",
+            variable=self.launch_var
+        )
+        chk_launch.pack(anchor="w", pady=(3, 14))
+
+        # Progress bar
+        self.status_var = tk.StringVar(value="Ready to install.")
+        self.status_lbl = tk.Label(
+            body_frame,
+            textvariable=self.status_var,
+            font=("Segoe UI", 8),
+            fg="#64748B",
+            bg="#F8FAFC"
+        )
+        self.status_lbl.pack(anchor="w", pady=(0, 4))
+
+        self.progress_bar = ttk.Progressbar(body_frame, orient="horizontal", mode="determinate")
+        self.progress_bar.pack(fill=tk.X, pady=(0, 16))
+
+        # Bottom Button Bar
+        btn_frame = tk.Frame(self, bg="#E2E8F0", height=50)
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        btn_frame.pack_propagate(False)
+
+        self.cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self.destroy)
+        self.cancel_btn.pack(side=tk.RIGHT, padx=(0, 16), pady=10)
+
+        self.install_btn = ttk.Button(btn_frame, text="Install Now ➔", command=self.start_install)
+        self.install_btn.pack(side=tk.RIGHT, padx=(0, 8), pady=10)
+
+    def on_browse(self):
+        chosen = filedialog.askdirectory(initialdir=self.dir_var.get())
+        if chosen:
+            self.dir_var.set(os.path.normpath(chosen))
+
+    def update_progress(self, percent, msg):
+        self.progress_bar["value"] = percent
+        self.status_var.set(msg)
+        self.update_idletasks()
+
+    def start_install(self):
+        target_dir = self.dir_var.get().strip()
+        if not target_dir:
+            messagebox.showwarning("Warning", "Please specify a valid installation directory.")
+            return
+
+        self.install_btn.config(state="disabled")
+        self.dir_entry.config(state="disabled")
+
+        threading.Thread(target=self._run_install_worker, args=(target_dir,), daemon=True).start()
+
+    def _run_install_worker(self, target_dir):
+        try:
+            exe_path = perform_installation(
+                zip_path=self.zip_path,
+                target_dir=target_dir,
+                create_desktop=self.desktop_var.get(),
+                create_start=self.start_var.get(),
+                progress_callback=self.update_progress
+            )
+
+            self.after(0, self._install_success, exe_path)
+        except Exception as e:
+            self.after(0, self._install_error, str(e))
+
+    def _install_success(self, exe_path):
+        self.status_var.set("Installation Completed Successfully!")
+        self.progress_bar["value"] = 100
+        self.install_btn.config(text="Finished", state="normal", command=self.destroy)
+        self.cancel_btn.pack_forget()
+
+        if self.launch_var.get() and os.path.exists(exe_path):
+            try:
+                subprocess.Popen([exe_path], cwd=os.path.dirname(exe_path))
+            except Exception:
+                pass
+
+        messagebox.showinfo(
+            "Success",
+            "Ananya Invoice Automation was installed successfully!\n\n"
+            "You can launch it anytime using the Desktop shortcut."
+        )
+        self.destroy()
+
+    def _install_error(self, err_msg):
+        self.status_var.set(f"Error: {err_msg}")
+        self.install_btn.config(state="normal")
+        self.dir_entry.config(state="normal")
+        messagebox.showerror("Installation Failed", f"An error occurred during installation:\n\n{err_msg}")
+
+
+def main():
+    zip_path = find_zip_package()
+    if not zip_path or not os.path.exists(zip_path):
+        # Fallback dialog if package is missing
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "Missing Installation Package",
+            f"Could not locate the application distribution archive: {ZIP_FILENAME}\n\n"
+            "Please ensure the installer was downloaded completely."
+        )
+        sys.exit(1)
+
+    # Check for silent install flag
+    if "/S" in sys.argv or "--silent" in sys.argv:
+        target = get_default_install_dir()
+        exe = perform_installation(zip_path, target, create_desktop=True, create_start=True)
+        if "--launch" in sys.argv and os.path.exists(exe):
+            subprocess.Popen([exe], cwd=target)
+        sys.exit(0)
+
+    app = SetupWizard(zip_path)
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
