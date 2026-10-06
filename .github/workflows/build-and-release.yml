@@ -61,4 +61,20 @@ jobs:
             dist/Ananya_Invoice_Automation_Windows.zip
           draft: false
           prerelease: false
-          generate_release_notes: true
+          name: "Release ${{ github.ref_name }}: 1-Click Windows Setup & Tax Invoice Automation"
+          body: |
+            ## 🚀 Ananya Enterprises - Invoice Automation & WhatsApp Dispatcher ${{ github.ref_name }}
+
+            ### 📥 Direct Downloads
+            - 🔹 [**Click here to Download Ananya_Invoice_Automation_Setup.exe**](https://github.com/NEXUS-888/tax-invoice-automation/releases/download/${{ github.ref_name }}/Ananya_Invoice_Automation_Setup.exe) *(Recommended: 1-Click Installer & Updater)*
+            - 📦 [**Click here to Download Ananya_Invoice_Automation_Windows.zip**](https://github.com/NEXUS-888/tax-invoice-automation/releases/download/${{ github.ref_name }}/Ananya_Invoice_Automation_Windows.zip) *(Standalone portable zip archive)*
+
+            ---
+
+            ### ✨ What's Included:
+            - 🔄 **Smart Installer & Updater:** Automatically detects existing installations and updates in-place while safeguarding all saved agencies, rates, loads, WhatsApp session, and Excel data.
+            - 🛡️ **Engine Stability Fix:** Added compatibility shims for openpyxl and numpy preventing startup exceptions.
+            - 📋 **Native Windows `CF_HDROP` Clipboard Attachment:** Reliable Ctrl+V PDF attachment for WhatsApp Desktop and Web.
+            - 📄 **Automated PDF Billing:** Complete ReportLab invoice generation with mandatory payment reminder.
+            - ✏️ **Agency Profile & Load Management:** Custom rates, loads, PAN, GST, and WhatsApp phone numbers with persistent storage.
+            - 📱 **Dual WhatsApp Dispatch:** Direct app share with clipboard attachment & automated batch dispatcher.
