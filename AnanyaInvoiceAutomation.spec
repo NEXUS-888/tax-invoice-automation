@@ -10,6 +10,8 @@ playwright_datas = collect_data_files('playwright')
 
 datas = playwright_datas + [
     ('Ananya Bill.xlsm', '.'),
+    # Invoice signature (pdf_generator.default_signature_path looks in _internal/data)
+    ('data/signature_final.png', 'data'),
 ]
 
 hiddenimports = [

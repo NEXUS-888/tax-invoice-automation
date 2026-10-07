@@ -1677,6 +1677,20 @@ class InvoiceAutomationApp(QMainWindow):
             self.log("Reset all data to default Excel workbook contents.")
             QMessageBox.information(self, "Reset Complete", "All data has been reset to the default master Excel workbook.")
 
+    def warn_if_signature_missing(self, pdf_gen):
+        """Invoices without the proprietor's signature must not go out unnoticed."""
+        if pdf_gen.has_signature:
+            return
+        self.log(f"⚠️ Signature image not found ({pdf_gen.signature_path}) — PDFs are generated WITHOUT a signature.")
+        if not getattr(self, '_signature_warning_shown', False):
+            self._signature_warning_shown = True
+            QMessageBox.warning(
+                self, "Signature Missing",
+                f"The signature image was not found:\n{pdf_gen.signature_path}\n\n"
+                "Invoices will be generated WITHOUT the signature. Reinstall the app or put "
+                "signature_final.png in the 'data' folder next to the app."
+            )
+
     def get_or_generate_agency_pdf(self, sheet_name, force_regenerate=True):
         """
         Retrieves or on-demand generates the PDF invoice for a single agency.
@@ -1756,6 +1770,7 @@ class InvoiceAutomationApp(QMainWindow):
         self.current_pdf_dir = pdf_dir
 
         pdf_gen = PDFGenerator(pdf_dir)
+        self.warn_if_signature_missing(pdf_gen)
         pdf_path = pdf_gen.generate_agency_pdf(agency_data)
 
         pdf_info = {
@@ -2327,6 +2342,7 @@ class InvoiceAutomationApp(QMainWindow):
             pdf_dir = os.path.join(self.output_dir, f"Invoices_{target_month.replace(' ', '_')}")
             self.current_pdf_dir = pdf_dir
             pdf_gen = PDFGenerator(pdf_dir)
+            self.warn_if_signature_missing(pdf_gen)
             self.generated_pdf_list = pdf_gen.batch_generate(self.generated_agency_list, clean_output_dir=True)
             self.log(f"Successfully generated {len(self.generated_pdf_list)} PDF invoices in {pdf_dir}")
 

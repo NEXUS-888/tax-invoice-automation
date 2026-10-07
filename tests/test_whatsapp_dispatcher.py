@@ -257,30 +257,39 @@ class TestShareEntryPoint(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "win32", "Windows only")
 class TestMaximizeWhatsApp(unittest.TestCase):
-    def _run(self, zoomed_states, windows=(111,)):
-        """zoomed_states: successive IsZoomed() answers."""
-        answers = iter(zoomed_states)
+    def _run(self, zoomed, iconic=lambda i: False, windows=(111,), timeout=30):
+        """zoomed(i)/iconic(i): window state on the i-th check (one check per 0.5 s loop)."""
+        calls = {"n": 0}
         user32 = MagicMock()
-        user32.IsZoomed.side_effect = lambda h: next(answers, True)
-        clock = iter(range(0, 1000))
-        with patch.object(WhatsAppDispatcher, "_whatsapp_windows", return_value=list(windows)),                 patch("ctypes.windll.user32", user32, create=True),                 patch("whatsapp_dispatcher.time.sleep"),                 patch("whatsapp_dispatcher.time.time", side_effect=lambda: next(clock)):
-            WhatsAppDispatcher().maximize_whatsapp_soon(timeout=30).join(5)
+        user32.IsZoomed.side_effect = lambda h: zoomed(calls["n"])
+        user32.IsIconic.side_effect = lambda h: iconic(calls["n"])
+
+        def sleep(_):
+            calls["n"] += 1
+        clock = iter(range(0, 10000))
+        with patch.object(WhatsAppDispatcher, "_whatsapp_windows", return_value=list(windows)),                 patch("ctypes.windll.user32", user32, create=True),                 patch("whatsapp_dispatcher.time.sleep", side_effect=sleep),                 patch("whatsapp_dispatcher.time.time", side_effect=lambda: next(clock)):
+            WhatsAppDispatcher().maximize_whatsapp_soon(timeout=timeout).join(5)
         return user32
 
     def test_maximizes_restored_window(self):
-        user32 = self._run([False, True, True, True, True, True])
+        user32 = self._run(lambda i: i > 0)
         user32.ShowWindow.assert_called_once_with(111, 3)
 
-    def test_re_maximizes_if_whatsapp_shrinks_again(self):
-        user32 = self._run([False, True, False, True, True, True, True, True])
+    def test_re_maximizes_when_whatsapp_shrinks_late(self):
+        """WhatsApp shrinking 20 s after opening (slow laptop) is still caught."""
+        user32 = self._run(lambda i: not (i == 0 or i == 20))
         self.assertEqual(user32.ShowWindow.call_count, 2)
 
     def test_leaves_maximized_window_alone(self):
-        user32 = self._run([True] * 10)
+        user32 = self._run(lambda i: True)
+        user32.ShowWindow.assert_not_called()
+
+    def test_leaves_window_minimized_by_user_alone(self):
+        user32 = self._run(lambda i: False, iconic=lambda i: True)
         user32.ShowWindow.assert_not_called()
 
     def test_no_whatsapp_window_gives_up_quietly(self):
-        user32 = self._run([], windows=())
+        user32 = self._run(lambda i: False, windows=())
         user32.ShowWindow.assert_not_called()
 
 

@@ -221,10 +221,11 @@ class WhatsAppDispatcher:
             return []
         return found
 
-    def maximize_whatsapp_soon(self, timeout=10.0):
+    def maximize_whatsapp_soon(self, timeout=45.0):
         """
-        WhatsApp restores itself to a small window when a link opens it; maximize it once it is up.
-        Runs on a daemon thread and re-checks for a few seconds in case WhatsApp resizes again.
+        WhatsApp restores itself to a small window when a link opens it - sometimes only once the chat
+        has loaded, which on a slow laptop can be many seconds later. A daemon thread keeps WhatsApp
+        maximized for `timeout` seconds after the share; a window the user minimized is left alone.
         """
         if sys.platform != "win32":
             return None
@@ -233,18 +234,10 @@ class WhatsAppDispatcher:
             import ctypes
             user32 = ctypes.windll.user32
             deadline = time.time() + timeout
-            settled_since = None  # WhatsApp has stayed maximized since then
             while time.time() < deadline:
-                windows = self._whatsapp_windows()
-                restored = [hwnd for hwnd in windows if not user32.IsZoomed(hwnd)]
-                for hwnd in restored:
-                    user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
-                if windows and not restored:
-                    settled_since = settled_since or time.time()
-                    if time.time() - settled_since >= 3:
-                        return
-                else:
-                    settled_since = None
+                for hwnd in self._whatsapp_windows():
+                    if not user32.IsZoomed(hwnd) and not user32.IsIconic(hwnd):
+                        user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
                 time.sleep(0.5)
 
         t = threading.Thread(target=worker, daemon=True, name="wa-maximize")

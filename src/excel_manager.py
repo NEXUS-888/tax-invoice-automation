@@ -59,6 +59,22 @@ def num_to_words_indian(num):
         return f"Rupees {r_text} Only"
 
 
+def money(value):
+    """Rounds to the paisa half-up, like Excel's ROUND (float round() gives 112.545 -> 112.54)."""
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def gst_breakdown(subtotal):
+    """(subtotal, sgst 9%, cgst 9%, grand total), each rounded to the paisa."""
+    subtotal = money(subtotal)
+    sgst = money(Decimal(str(subtotal)) * Decimal("0.09"))
+    cgst = sgst
+    return subtotal, sgst, cgst, money(Decimal(str(subtotal)) + Decimal(str(sgst)) + Decimal(str(cgst)))
+
+
+VEHICLE_ROWS = range(17, 30)  # 13 vehicle rows in the invoice template
+
+
 class ExcelManager:
     def __init__(self, file_path):
         self.file_path = file_path
@@ -176,6 +192,14 @@ class ExcelManager:
 
         current_inv_no = int(starting_inv_no)
         agency_data_list = []
+        # Numbers already given to agencies by hand; automatic numbering must not reuse them.
+        taken_inv_nos = set()
+        for v in custom_inv_map.values():
+            try:
+                taken_inv_nos.add(int(v))
+            except (TypeError, ValueError):
+                pass
+        assigned_by_sheet = {}
 
         for name in target_sheet_names:
             if name == 'Sheet1':
@@ -212,8 +236,12 @@ class ExcelManager:
             if custom_inv_map and (name in custom_inv_map or name.strip() in custom_inv_map):
                 assigned_inv_no = int(custom_inv_map.get(name) or custom_inv_map.get(name.strip()))
             else:
+                while current_inv_no in taken_inv_nos:
+                    current_inv_no += 1
                 assigned_inv_no = current_inv_no
                 current_inv_no += 1
+            taken_inv_nos.add(assigned_inv_no)
+            assigned_by_sheet[name] = assigned_inv_no
             ws['F10'] = assigned_inv_no
 
             # 3. Update Month Description
@@ -254,9 +282,9 @@ class ExcelManager:
             # First pass: update existing vehicle rows
             used_vehicles = set()
             max_sl = 0
-            first_empty_row = None
+            empty_rows = []
 
-            for r in range(17, 30):
+            for r in VEHICLE_ROWS:
                 desc = ws.cell(r, 3).value
                 sl_val = ws.cell(r, 1).value
                 if sl_val and str(sl_val).isdigit():
@@ -279,7 +307,7 @@ class ExcelManager:
                         new_load = float(ws.cell(r, 4).value or 0)
 
                     rate = float(ws.cell(r, 5).value or 0)
-                    v_total = round(new_load * rate, 2)
+                    v_total = money(new_load * rate)
                     ws.cell(r, 6).value = v_total
                     subtotal += v_total
 
@@ -291,8 +319,8 @@ class ExcelManager:
                         'rate': rate,
                         'total_amount': v_total
                     })
-                elif first_empty_row is None:
-                    first_empty_row = r
+                else:
+                    empty_rows.append(r)
 
             # Second pass: append any NEW vehicles added by user
             if isinstance(agency_vehicles_data, list):
@@ -301,42 +329,44 @@ class ExcelManager:
                         f"Agency '{name}' has {len(agency_vehicles_data)} vehicles; "
                         "the workbook template supports a maximum of 13."
                     )
+                new_vehicles = []
                 for vitem in agency_vehicles_data:
                     v_no = str(vitem['vehicle_no']).strip()
                     norm_v = re.sub(r'[\s-]+', '', v_no).upper()
-                    if v_no not in used_vehicles and norm_v not in used_vehicles and first_empty_row is not None and first_empty_row < 30:
-                        max_sl += 1
-                        r = first_empty_row
-                        new_load = float(vitem.get('loads', 0))
-                        rate = float(vitem.get('rate', 0))
-                        v_total = round(new_load * rate, 2)
+                    if v_no and v_no not in used_vehicles and norm_v not in used_vehicles:
+                        new_vehicles.append(vitem)
+                        used_vehicles.update((v_no, norm_v))
+                if len(new_vehicles) > len(empty_rows):
+                    raise ValueError(
+                        f"Agency '{name}' has no room for {len(new_vehicles)} new vehicle(s): only "
+                        f"{len(empty_rows)} empty row(s) left in the 13-row invoice template."
+                    )
+                for vitem, r in zip(new_vehicles, empty_rows):
+                    # Rows below a gap may hold existing vehicles, so only truly empty rows are used.
+                    v_no = str(vitem['vehicle_no']).strip()
+                    max_sl += 1
+                    new_load = float(vitem.get('loads', 0))
+                    rate = float(vitem.get('rate', 0))
+                    v_total = money(new_load * rate)
 
-                        ws.cell(r, 1).value = max_sl
-                        ws.cell(r, 3).value = v_no
-                        ws.cell(r, 4).value = new_load
-                        ws.cell(r, 5).value = rate
-                        ws.cell(r, 6).value = v_total
+                    ws.cell(r, 1).value = max_sl
+                    ws.cell(r, 3).value = v_no
+                    ws.cell(r, 4).value = new_load
+                    ws.cell(r, 5).value = rate
+                    ws.cell(r, 6).value = v_total
+                    subtotal += v_total
 
-                        subtotal += v_total
-
-                        vehicles_info.append({
-                            'sl': max_sl,
-                            'hsn': "",
-                            'vehicle_no': v_no,
-                            'loads': new_load,
-                            'rate': rate,
-                            'total_amount': v_total
-                        })
-
-                        used_vehicles.add(v_no)
-
-                        first_empty_row += 1
+                    vehicles_info.append({
+                        'sl': max_sl,
+                        'hsn': "",
+                        'vehicle_no': v_no,
+                        'loads': new_load,
+                        'rate': rate,
+                        'total_amount': v_total
+                    })
 
             # 5. Calculate Subtotal, SGST, CGST, Grand Total
-            subtotal = round(subtotal, 2)
-            sgst = round(subtotal * 0.09, 2)
-            cgst = round(subtotal * 0.09, 2)
-            grand_total = round(subtotal + sgst + cgst, 2)
+            subtotal, sgst, cgst, grand_total = gst_breakdown(subtotal)
             in_words = num_to_words_indian(grand_total)
 
             ws['F30'] = subtotal
@@ -365,6 +395,14 @@ class ExcelManager:
                 'grand_total': grand_total,
                 'in_words': in_words
             })
+
+        by_number = {}
+        for sheet, number in assigned_by_sheet.items():
+            by_number.setdefault(number, []).append(sheet)
+        clashes = {n: sheets for n, sheets in by_number.items() if len(sheets) > 1}
+        if clashes:
+            details = "; ".join(f"{n}: {', '.join(sheets)}" for n, sheets in sorted(clashes.items()))
+            raise ValueError(f"Duplicate invoice numbers — each invoice needs its own number ({details}).")
 
         # Save workbook handling file lock gracefully
         try:
@@ -437,7 +475,7 @@ class ExcelManager:
             v_no = str(v.get('vehicle_no', '')).strip()
             loads = float(v.get('loads', 0))
             rate = float(v.get('rate', 0))
-            v_total = round(loads * rate, 2)
+            v_total = money(loads * rate)
             subtotal += v_total
             vehicles_info.append({
                 'sl': sl,
@@ -448,10 +486,7 @@ class ExcelManager:
                 'total_amount': v_total
             })
 
-        subtotal = round(subtotal, 2)
-        sgst = round(subtotal * 0.09, 2)
-        cgst = round(subtotal * 0.09, 2)
-        grand_total = round(subtotal + sgst + cgst, 2)
+        subtotal, sgst, cgst, grand_total = gst_breakdown(subtotal)
         in_words = num_to_words_indian(grand_total)
 
         month_desc = f"LPG CYLINDER LOADING AND UNLOADING CHARGES FOR THE MONTH {target_month_year.upper()}"

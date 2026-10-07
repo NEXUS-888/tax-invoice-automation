@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from xml.sax.saxutils import escape
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image
@@ -7,14 +8,32 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 
+SIGNATURE_FILE = "signature_final.png"
+
+
+def default_signature_path():
+    """
+    The signature image (600 DPI block: "For ANANYA ENTERPRISES" + ink + "Proprietor").
+    Installed app: data/ next to the exe (lets a user replace it), else the copy bundled in _internal/data.
+    From source: the repo's data/ folder.
+    """
+    candidates = []
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(os.path.dirname(sys.executable), "data", SIGNATURE_FILE))
+        candidates.append(os.path.join(getattr(sys, "_MEIPASS", ""), "data", SIGNATURE_FILE))
+    candidates.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", SIGNATURE_FILE))
+    return next((p for p in candidates if os.path.exists(p)), candidates[-1])
+
+
 class PDFGenerator:
     def __init__(self, output_dir, signature_path=None):
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
+        self.signature_path = signature_path or default_signature_path()
 
-        # 600 DPI signature block image (white bg, includes For ANANYA + ink + Proprietor)
-        base_dir = os.path.dirname(os.path.dirname(__file__))
-        self.signature_path = signature_path or os.path.join(base_dir, "data", "signature_final.png")
+    @property
+    def has_signature(self):
+        return os.path.exists(self.signature_path)
 
     def generate_agency_pdf(self, agency_data):
         """
@@ -230,10 +249,13 @@ class PDFGenerator:
         else:
             elements.append(Spacer(1, 55))
 
-        # Remove any old PDFs for this agency from previous runs (different invoice numbers or _updated)
+        # Remove this agency's old PDFs from previous runs (different invoice number or _updated).
+        # Match the whole name: a substring test would also delete other agencies whose sheet name
+        # merely contains this one (e.g. "BG" inside "KCN_BG").
+        own_pdf = re.compile(rf"Invoice_[^_]*_{re.escape(safe_sheet_name)}(_updated)?\.pdf", re.IGNORECASE)
         if os.path.exists(self.output_dir):
             for existing_f in os.listdir(self.output_dir):
-                if existing_f.lower().endswith('.pdf') and safe_sheet_name.lower() in existing_f.lower():
+                if own_pdf.fullmatch(existing_f):
                     if existing_f != file_name:
                         try:
                             os.remove(os.path.join(self.output_dir, existing_f))
