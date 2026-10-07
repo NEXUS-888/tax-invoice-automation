@@ -150,265 +150,96 @@ class TestFallback(unittest.TestCase):
         self.assertNotIn("Ctrl+V", msg)
 
 
-class TestDesktopAttach(unittest.TestCase):
-    def setUp(self):
-        self.dispatcher = WhatsAppDispatcher()
-        self.pdf = _make_pdf()
-
-    def tearDown(self):
-        os.remove(self.pdf)
-
-    def _run(self, bridge):
-        done = []
-        with patch("whatsapp_dispatcher.WhatsAppDesktopBridge", return_value=bridge):
-            t = self.dispatcher.attach_in_background("919876543210", "msg", self.pdf,
-                                                     on_complete=lambda ok, m: done.append((ok, m)))
-            t.join(5)
-        return done
-
-    @patch.object(WhatsAppDispatcher, "run_fallback")
-    def test_success_attaches_inside_whatsapp(self, mock_fallback):
-        bridge = MagicMock()
-        bridge.enable.return_value = (True, "connected")
-        bridge.attach_invoice.return_value = (True, "PDF attached")
-        self.assertEqual(self._run(bridge), [(True, "PDF attached")])
-        bridge.attach_invoice.assert_called_once_with("919876543210", "msg", self.pdf)
-        mock_fallback.assert_not_called()
-
-    @patch.object(WhatsAppDispatcher, "run_fallback", return_value="fallback hint")
-    def test_connect_failure_skips_attach_and_falls_back(self, mock_fallback):
-        bridge = MagicMock()
-        bridge.enable.return_value = (False, "not installed")
-        self.assertEqual(self._run(bridge), [(False, "fallback hint")])
-        bridge.attach_invoice.assert_not_called()
-        self.assertIn("not installed", mock_fallback.call_args.kwargs["reason"])
-
-    @patch.object(WhatsAppDispatcher, "run_fallback", return_value="fallback hint")
-    def test_attach_failure_falls_back(self, mock_fallback):
-        bridge = MagicMock()
-        bridge.enable.return_value = (True, "connected")
-        bridge.attach_invoice.return_value = (False, "chat did not open")
-        self.assertEqual(self._run(bridge), [(False, "fallback hint")])
-
-    @patch.object(WhatsAppDispatcher, "run_fallback", return_value="fallback hint")
-    def test_exception_never_escapes_thread(self, _fallback):
-        bridge = MagicMock()
-        bridge.enable.side_effect = RuntimeError("boom")
-        self.assertEqual(self._run(bridge), [(False, "fallback hint")])
-
-    @patch.object(WhatsAppDispatcher, "run_fallback")
-    def test_shares_run_one_at_a_time(self, _fallback):
-        active, peak = [0], [0]
-        lock = threading.Lock()
-
-        def slow_attach(*_):
-            with lock:
-                active[0] += 1
-                peak[0] = max(peak[0], active[0])
-            time.sleep(0.2)
-            with lock:
-                active[0] -= 1
-            return True, "ok"
-
-        bridge = MagicMock()
-        bridge.enable.return_value = (True, "connected")
-        bridge.attach_invoice.side_effect = slow_attach
-        with patch("whatsapp_dispatcher.WhatsAppDesktopBridge", return_value=bridge):
-            threads = [self.dispatcher.attach_in_background("919876543210", "m", self.pdf) for _ in range(3)]
-            for t in threads:
-                t.join(5)
-        self.assertEqual(peak[0], 1)
-        self.assertEqual(bridge.attach_invoice.call_count, 3)
-
-    def test_find_windows_excludes_non_whatsapp_processes(self):
-        """This test process (python.exe) owns no WhatsApp windows, so nothing of ours may match."""
-        own_pid = os.getpid()
-        if sys.platform != "win32":
-            self.assertEqual(self.dispatcher.find_whatsapp_desktop_windows(), [])
-            return
-        import ctypes
-        from ctypes import wintypes
-        for hwnd, _title, exe in self.dispatcher.find_whatsapp_desktop_windows():
-            self.assertTrue(exe.startswith("whatsapp"))
-            pid = wintypes.DWORD()
-            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            self.assertNotEqual(pid.value, own_pid)
-
-    def test_force_foreground_invalid_hwnd(self):
-        self.assertFalse(self.dispatcher.force_foreground(0))
-
-
 @patch("whatsapp_dispatcher.subprocess.Popen")
-@patch("whatsapp_dispatcher.webbrowser.open", return_value=True)
 class TestShareEntryPoint(unittest.TestCase):
+    """Share App: PDF copied to the clipboard + WhatsApp opened with the message; the user presses Ctrl+V."""
+
     def setUp(self):
         self.dispatcher = WhatsAppDispatcher()
         self.pdf = _make_pdf()
-        for name, value in (("find_whatsapp_desktop_windows", []), ("copy_pdf_to_clipboard", True)):
-            p = patch.object(WhatsAppDispatcher, name, return_value=value)
-            p.start()
-            self.addCleanup(p.stop)
+        p = patch.object(WhatsAppDispatcher, "copy_pdf_to_clipboard", return_value=True)
+        self.copy = p.start()
+        self.addCleanup(p.stop)
 
     def tearDown(self):
         os.remove(self.pdf)
 
-    @patch.object(WhatsAppDispatcher, "attach_in_background")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
-    def test_desktop_with_phone_attaches_without_whatsapp_link(self, mock_open, mock_bg, _wb, _popen):
-        cb = MagicMock()
-        ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
-            "ACME FUELS", "9876543210", "105", "SEP 2026", self.pdf, target="desktop", on_complete=cb)
+    def test_app_with_phone_copies_pdf_and_opens_chat_with_message(self, mock_open, mock_popen):
+        ok, msg = self.dispatcher.share_invoice_to_whatsapp(
+            "ACME FUELS", "9876543210", "105", "SEP 2026", self.pdf, target="desktop")
         self.assertTrue(ok)
-        self.assertTrue(pending)
-        # A whatsapp:// link would open the "Send to" picker and send the text separately (twice).
-        mock_open.assert_not_called()
-        phone, message, pdf = mock_bg.call_args[0]
-        self.assertEqual(phone, "919876543210")
-        self.assertIn(REMINDER, message)
-        self.assertEqual(pdf, os.path.abspath(self.pdf))
-        self.assertIs(mock_bg.call_args.kwargs["on_complete"], cb)
-        self.assertNotIn("attached", msg.lower().replace("attaching", ""))  # never claims success up front
+        self.copy.assert_called_once_with(os.path.abspath(self.pdf))
+        url = mock_open.call_args[0][0]
+        self.assertTrue(url.startswith("whatsapp://send?phone=919876543210&text="))
+        self.assertIn("Note%20%3A%20please%20complete%20the%20payment", url)
+        self.assertEqual(mock_open.call_count, 1)  # opened exactly once: no duplicate message
+        self.assertIn("Ctrl+V in the chat", msg)
+        mock_popen.assert_not_called()  # no Explorer window
 
-    @patch.object(WhatsAppDispatcher, "attach_in_background")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
-    def test_invalid_number_refuses_instead_of_opening_picker(self, mock_open, mock_bg, _wb, _popen):
-        ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
-            "ACME", "12345", "1", "M", self.pdf, target="desktop")
+    def test_app_without_phone_opens_contact_picker(self, mock_open, mock_popen):
+        ok, msg = self.dispatcher.share_invoice_to_whatsapp("ACME", None, "1", "M", self.pdf, target="desktop")
+        self.assertTrue(ok)
+        self.assertTrue(mock_open.call_args[0][0].startswith("whatsapp://send?text="))
+        self.assertIn("after picking the contact", msg)
+        self.copy.assert_called_once()
+        mock_popen.assert_not_called()
+
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_pdf_copied_before_whatsapp_opens(self, mock_open, _popen):
+        order = []
+        self.copy.side_effect = lambda *_: order.append("copy") or True
+        mock_open.side_effect = lambda *_: order.append("open") or True
+        self.dispatcher.share_invoice_to_whatsapp("ACME", "9876543210", "1", "M", self.pdf, target="desktop")
+        self.assertEqual(order, ["copy", "open"])
+
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_invalid_number_refuses_instead_of_opening_picker(self, mock_open, _popen):
+        ok, msg = self.dispatcher.share_invoice_to_whatsapp("ACME", "12345", "1", "M", self.pdf, target="desktop")
         self.assertFalse(ok)
-        self.assertFalse(pending)
         self.assertIn("not a valid WhatsApp number", msg)
         mock_open.assert_not_called()
-        mock_bg.assert_not_called()
-
-    @patch.object(WhatsAppDispatcher, "attach_in_background")
-    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
-    def test_desktop_without_phone_uses_windows_share(self, mock_open, mock_bg, _wb, _popen):
-        cb = MagicMock()
-        with patch.object(WhatsAppDispatcher, "share_with_windows",
-                          return_value=(True, "Windows Share is open")) as share:
-            ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
-                "ACME", None, "105", "M", self.pdf, target="desktop", on_complete=cb)
-        self.assertTrue(ok)
-        self.assertTrue(pending)
-        mock_open.assert_not_called()  # no whatsapp:// "Send to" picker (it sends the text on its own)
-        mock_bg.assert_not_called()
-        pdf, message, title = share.call_args[0]
-        self.assertEqual(pdf, os.path.abspath(self.pdf))
-        self.assertIn(REMINDER, message)
-        self.assertEqual(title, "Invoice 105")
-        self.assertIs(share.call_args.kwargs["on_complete"], cb)
-
-    @patch.object(WhatsAppDispatcher, "run_fallback", return_value="hint")
-    def test_windows_share_unavailable_falls_back(self, mock_fallback, _wb, _popen):
-        with patch.object(WhatsAppDispatcher, "share_with_windows", return_value=(False, "helper missing")):
-            ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
-                "ACME", None, "1", "M", self.pdf, target="desktop")
-        self.assertFalse(ok)
-        self.assertFalse(pending)
-        self.assertEqual(msg, "hint")
+        self.copy.assert_not_called()
 
     @patch.object(WhatsAppDispatcher, "run_fallback", return_value="hint")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
-    def test_browser_web_runs_fallback_immediately(self, _open, mock_fallback, _wb, _popen):
-        ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
-            "ACME", "9876543210", "1", "M", self.pdf, target="web")
+    def test_copy_failure_falls_back_to_explorer(self, _open, mock_fallback, _popen):
+        self.copy.return_value = False
+        ok, msg = self.dispatcher.share_invoice_to_whatsapp("ACME", "9876543210", "1", "M", self.pdf)
         self.assertTrue(ok)
-        self.assertFalse(pending)
-        mock_fallback.assert_called_once_with(os.path.abspath(self.pdf))
         self.assertIn("hint", msg)
+        mock_fallback.assert_called_once()
+
+    @patch.object(WhatsAppDispatcher, "_open_url", side_effect=[False, True])
+    def test_desktop_not_installed_falls_back_to_web(self, mock_open, _popen):
+        ok, msg = self.dispatcher.share_invoice_to_whatsapp(
+            "ACME", "9876543210", "1", "M", self.pdf, target="desktop")
+        self.assertTrue(ok)
+        self.assertTrue(mock_open.call_args_list[1][0][0].startswith("https://web.whatsapp.com/send?phone="))
+        self.assertIn("WhatsApp Web", msg)
+        self.assertIn("Ctrl+V", msg)
+
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_web_target_copies_pdf_too(self, mock_open, mock_popen):
+        ok, msg = self.dispatcher.share_invoice_to_whatsapp("ACME", "9876543210", "1", "M", self.pdf, target="web")
+        self.assertTrue(ok)
+        self.assertTrue(mock_open.call_args[0][0].startswith("https://web.whatsapp.com/send?phone="))
+        self.copy.assert_called_once()
+        mock_popen.assert_not_called()
 
     @patch.object(WhatsAppDispatcher, "run_fallback", return_value="hint")
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=False)
-    def test_nothing_opens_reports_failure(self, _open, _fallback, _wb, _popen):
-        ok, msg, pending = self.dispatcher.share_invoice_to_whatsapp(
-            "ACME", "9876543210", "1", "M", self.pdf, target="web")
+    def test_nothing_opens_reports_failure(self, _open, _fallback, _popen):
+        ok, msg = self.dispatcher.share_invoice_to_whatsapp("ACME", "9876543210", "1", "M", self.pdf, target="web")
         self.assertFalse(ok)
-        self.assertFalse(pending)
+        self.assertIn("hint", msg)
 
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
-    def test_legacy_alias_returns_pair(self, _open, _wb, _popen):
-        with patch.object(WhatsAppDispatcher, "attach_in_background"):
-            result = self.dispatcher.send_agency_invoice("ACME", "9876543210", "1", "M", self.pdf)
+    def test_legacy_alias_returns_pair(self, _open, _popen):
+        result = self.dispatcher.send_agency_invoice("ACME", "9876543210", "1", "M", self.pdf)
         self.assertEqual(len(result), 2)
-
-
-@unittest.skipUnless(sys.platform == "win32", "Windows Share is Windows-only")
-class TestWindowsShare(unittest.TestCase):
-    def setUp(self):
-        self.dispatcher = WhatsAppDispatcher()
-        self.pdf = _make_pdf()
-
-    def tearDown(self):
-        os.remove(self.pdf)
-
-    def _share(self, stdout=b"", side_effect=None):
-        proc = MagicMock(pid=4242)
-        if side_effect:
-            proc.communicate.side_effect = side_effect
-        else:
-            proc.communicate.return_value = (stdout, None)
-        done = threading.Event()
-        result = {}
-        with patch("whatsapp_dispatcher.share_helper_path", return_value=sys.executable), \
-                patch("whatsapp_dispatcher.subprocess.Popen", return_value=proc) as popen, \
-                patch.object(WhatsAppDispatcher, "_set_clipboard_text", return_value=True) as clip, \
-                patch("ctypes.windll.user32.AllowSetForegroundWindow", create=True) as allow, \
-                patch.object(WhatsAppDispatcher, "run_fallback", return_value="fallback hint") as fallback:
-            started, msg = self.dispatcher.share_with_windows(
-                self.pdf, "Dear ACME,\nNote", "Invoice 1",
-                on_complete=lambda ok, m: (result.update(ok=ok, msg=m), done.set()))
-            done.wait(5)
-        return started, msg, result, popen, clip, allow, fallback
-
-    def test_whatsapp_chosen(self):
-        started, msg, result, popen, clip, allow, fallback = self._share(b"TARGET:WhatsApp\r\n")
-        self.assertTrue(started)
-        self.assertIn("click WhatsApp", msg)
-        self.assertTrue(result["ok"])
-        self.assertIn("Shared to WhatsApp", result["msg"])
-        args = popen.call_args[0][0]
-        self.assertEqual(args[1], self.pdf)
-        self.assertEqual(args[3], "Invoice 1")
-        self.assertFalse(os.path.exists(args[2]))  # message file cleaned up
-        clip.assert_called_once_with("Dear ACME,\nNote")
-        allow.assert_called_once_with(4242)
-        fallback.assert_not_called()
-
-    def test_cancelled_has_no_fallback(self):
-        _, _, result, _, _, _, fallback = self._share(b"CANCELLED\r\n")
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["msg"], "Share was cancelled.")
-        fallback.assert_not_called()
-
-    def test_helper_error_falls_back(self):
-        _, _, result, _, _, _, fallback = self._share(b"ERROR:boom\r\n")
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["msg"], "fallback hint")
-        self.assertIn("boom", fallback.call_args.kwargs["reason"])
-
-    def test_missing_helper(self):
-        with patch("whatsapp_dispatcher.share_helper_path", return_value=r"C:\nope\ShareInvoice.exe"):
-            started, msg = self.dispatcher.share_with_windows(self.pdf, "m", "t")
-        self.assertFalse(started)
-        self.assertIn("missing", msg)
-
-    def test_clipboard_text_round_trip(self):
-        import ctypes
-        from ctypes import wintypes
-        self.assertTrue(self.dispatcher._set_clipboard_text("Line 1\nNote : ₹ test"))
-        user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
-        user32.GetClipboardData.restype = wintypes.HANDLE
-        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
-        kernel32.GlobalLock.restype = ctypes.c_wchar_p
-        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
-        self.assertTrue(user32.OpenClipboard(None))
-        try:
-            h = user32.GetClipboardData(13)
-            text = kernel32.GlobalLock(h)
-            kernel32.GlobalUnlock(h)
-        finally:
-            user32.CloseClipboard()
-        self.assertEqual(text, "Line 1\r\nNote : ₹ test")
+        self.assertTrue(result[0])
 
 
 class TestPlaywrightSharePreview(unittest.TestCase):

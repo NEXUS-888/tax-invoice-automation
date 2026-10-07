@@ -67,21 +67,26 @@ class TestGUIIntegration(unittest.TestCase):
         self.gui.whatsapp_connected = True
         self.gui.wa_worker = MagicMock()
         with patch.object(self.gui.wa_dispatcher, "share_invoice_to_whatsapp",
-                          return_value=(True, "attaching", True)) as mock_disp:
+                          return_value=(True, "copied")) as mock_disp:
             self.gui.execute_direct_share("ACME", "9876543210", "1", "M", "x.pdf", 0, target="desktop")
         mock_disp.assert_called_once()
         self.gui.wa_worker.queue_share_preview.assert_not_called()
 
-    def test_share_without_session_uses_dispatcher_and_result_updates_row(self):
+    def test_app_share_shows_ctrl_v_status(self):
         self._one_row_table()
         self.gui.whatsapp_connected = False
         with patch.object(self.gui.wa_dispatcher, "share_invoice_to_whatsapp",
-                          return_value=(True, "attaching", True)) as mock_disp:
+                          return_value=(True, "The PDF is copied")) as mock_disp:
             self.gui.execute_direct_share("ACME", "9876543210", "1", "M", "x.pdf", 0, target="desktop")
-        on_complete = mock_disp.call_args.kwargs["on_complete"]
-        on_complete(True, "pasted")
-        app.processEvents()
-        self.assertIn("PDF Attached [App]", self.gui.dispatch_table.item(0, 5).text())
+        self.assertEqual(mock_disp.call_args.kwargs["target"], "desktop")
+        self.assertIn("Ctrl+V", self.gui.dispatch_table.item(0, 5).text())
+
+    def test_app_share_failure_shows_error_status(self):
+        self._one_row_table()
+        with patch.object(self.gui.wa_dispatcher, "share_invoice_to_whatsapp",
+                          return_value=(False, "'123' is not a valid WhatsApp number")):
+            self.gui.execute_direct_share("ACME", "123", "1", "M", "x.pdf", 0, target="desktop")
+        self.assertIn("Could not open WhatsApp", self.gui.dispatch_table.item(0, 5).text())
 
     def test_web_session_failure_triggers_fallback(self):
         self._one_row_table()

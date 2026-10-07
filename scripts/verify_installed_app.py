@@ -168,9 +168,6 @@ def run_full_verification():
     print(f"  -> Formatted Phone: {formatted_phone}")
     print(f"  -> Invoice Message formatted cleanly ({len(msg)} characters).")
     
-    # Test auto attachment window detection helper
-    desktop_wins = dispatcher.find_whatsapp_desktop_windows()
-    print(f"  -> Native WhatsApp Desktop windows detected: {len(desktop_wins)}")
     report["WhatsAppDispatch"] = "PASSED"
 
     # 8. Verify Executable Direct Launch & Process Health

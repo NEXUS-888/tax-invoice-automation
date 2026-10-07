@@ -425,8 +425,6 @@ class InvoiceAutomationApp(QMainWindow):
     request_single_send = pyqtSignal(object)
     request_bulk_send = pyqtSignal(object)
     request_close_whatsapp = pyqtSignal()
-    # Emitted from the dispatcher's background attach thread; Qt queues it onto the GUI thread
-    desktop_share_finished = pyqtSignal(object, bool, str)
 
     def __init__(self):
         super().__init__()
@@ -463,7 +461,6 @@ class InvoiceAutomationApp(QMainWindow):
         self.contacts_mgr = ContactsManager(self.contacts_path)
         self.state_mgr = StateManager(self.state_path)
         self.wa_dispatcher = WhatsAppDispatcher()
-        self.desktop_share_finished.connect(self.on_share_result)
         self.wa_automator = None
         self.wa_thread = None
         self.wa_worker = None
@@ -2001,7 +1998,7 @@ class InvoiceAutomationApp(QMainWindow):
         if phones:
             for phone_num in phones:
                 act_app = menu.addAction(f"📱 Send via WhatsApp App ({phone_num})")
-                act_app.setToolTip("Opens chat in WhatsApp Desktop app and automatically attaches PDF invoice into chat")
+                act_app.setToolTip("Copies the PDF and opens this chat with the message: press Ctrl+V in the chat, then Send")
                 act_app.triggered.connect(
                     lambda _, p=phone_num, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
                     self.execute_direct_share(agency_name, p, i_no, m_desc, p_path, r_i, target="desktop")
@@ -2016,7 +2013,7 @@ class InvoiceAutomationApp(QMainWindow):
             menu.addSeparator()
         else:
             act_enter = menu.addAction("📱 Send via WhatsApp App (enter number)...")
-            act_enter.setToolTip("Asks for this agency's WhatsApp number, saves it, opens the chat and attaches the PDF")
+            act_enter.setToolTip("Asks for this agency's WhatsApp number, saves it, copies the PDF and opens the chat")
             act_enter.triggered.connect(
                 lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx, s_n=s_name:
                 self.prompt_number_and_share(agency_name, s_n, i_no, m_desc, p_path, r_i)
@@ -2024,13 +2021,13 @@ class InvoiceAutomationApp(QMainWindow):
             menu.addSeparator()
 
         act_picker_app = menu.addAction("📱 Open WhatsApp App (Select Contact)...")
-        act_picker_app.setToolTip("Opens Windows Share with the PDF and message: click WhatsApp, pick the contact, press Send")
+        act_picker_app.setToolTip("Copies the PDF and opens WhatsApp with the message: pick the contact, press Ctrl+V in the chat, then Send")
         act_picker_app.triggered.connect(
             lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
             self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="desktop")
         )
 
-        act_picker_web = menu.addAction("🌐 Open WhatsApp Web (Select Contact — paste PDF with Ctrl+V)...")
+        act_picker_web = menu.addAction("🌐 Open WhatsApp Web (Select Contact)...")
         act_picker_web.triggered.connect(
             lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
             self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="web")
@@ -2063,11 +2060,10 @@ class InvoiceAutomationApp(QMainWindow):
     def execute_direct_share(self, agency_name, phone, inv_no, month_desc, pdf_path, row_idx=None, target=None):
         """
         Shares one agency invoice:
-        - target 'desktop'/'app' -> WhatsAppDispatcher opens the chat in WhatsApp Desktop and pastes the
-          PDF into it in the background, falling back to clipboard + Explorer pre-selection on failure.
+        - target 'desktop'/'app' (and 'web' without a session) -> WhatsAppDispatcher copies the PDF to the
+          clipboard and opens WhatsApp with the message; the user presses Ctrl+V in the chat, then Send.
         - target 'web' with a connected WhatsApp Web session -> Playwright attaches the PDF and fills
-          the caption; the user presses Send.
-        Results arrive in on_share_result; the GUI thread never blocks.
+          the caption (result arrives in on_share_result); the user presses Send.
         """
         item = {
             'row_idx': row_idx,
@@ -2086,25 +2082,18 @@ class InvoiceAutomationApp(QMainWindow):
             self.wa_worker.queue_share_preview(item)
             return
 
-        if target in ("desktop", "app") and not phone:
-            item['route'] = 'windows_share'
-        success, msg, pending = self.wa_dispatcher.share_invoice_to_whatsapp(
+        success, msg = self.wa_dispatcher.share_invoice_to_whatsapp(
             agency_name=agency_name,
             phone=phone,
             invoice_no=inv_no,
             month_desc=month_desc,
             pdf_path=pdf_path,
             target=target,
-            on_complete=lambda ok, m, it=item: self.desktop_share_finished.emit(it, ok, m),
         )
         self.log(msg)
 
-        if pending and item.get('route') == 'windows_share':
-            self._set_share_status(row_idx, "📤 Choose WhatsApp in Windows Share...", "#eab308")
-        elif pending:
-            self._set_share_status(row_idx, "⏳ Attaching in WhatsApp App...", "#eab308")
-        elif success:
-            self._set_share_status(row_idx, "📋 PDF ready to drop", "#38bdf8")
+        if success:
+            self._set_share_status(row_idx, "📋 PDF copied — press Ctrl+V in the chat", "#38bdf8")
             self._show_share_hint(msg)
         else:
             self._set_share_status(row_idx, "❌ Could not open WhatsApp", "#ef4444")
@@ -2151,24 +2140,11 @@ class InvoiceAutomationApp(QMainWindow):
 
     @pyqtSlot(object, bool, str)
     def on_share_result(self, item, attached, msg):
-        """Result of an interactive share from the Playwright worker or the desktop attach thread."""
+        """Result of an interactive share from the connected WhatsApp Web (Playwright) worker."""
         agency_name = item.get('agency_name', '')
         row_idx = item.get('row_idx')
         via_web = item.get('route') == 'web_session'
         badge = "Web" if via_web else "App"
-
-        if item.get('route') == 'windows_share':
-            if attached:
-                self._set_share_status(row_idx, "✅ Shared to WhatsApp — pick contact & Send", "#22c55e")
-                self.log(f"✅ {agency_name}: {msg}")
-            elif msg == "Share was cancelled.":
-                self._set_share_status(row_idx, "Share cancelled", "#94a3b8")
-                self.log(f"{agency_name}: {msg}")
-            else:
-                self._set_share_status(row_idx, "📋 PDF ready to drop", "#38bdf8")
-                self.log(f"⚠️ {agency_name}: {msg}")
-                self._show_share_hint(msg)
-            return
 
         if attached:
             self._set_share_status(row_idx, f"✅ PDF Attached [{badge}] — press Send", "#22c55e")
