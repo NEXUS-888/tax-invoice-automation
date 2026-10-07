@@ -160,6 +160,9 @@ class TestShareEntryPoint(unittest.TestCase):
         p = patch.object(WhatsAppDispatcher, "copy_pdf_to_clipboard", return_value=True)
         self.copy = p.start()
         self.addCleanup(p.stop)
+        m = patch.object(WhatsAppDispatcher, "maximize_whatsapp_soon")  # never touch the real window
+        self.maximize = m.start()
+        self.addCleanup(m.stop)
 
     def tearDown(self):
         os.remove(self.pdf)
@@ -176,6 +179,16 @@ class TestShareEntryPoint(unittest.TestCase):
         self.assertEqual(mock_open.call_count, 1)  # opened exactly once: no duplicate message
         self.assertIn("Ctrl+V in the chat", msg)
         mock_popen.assert_not_called()  # no Explorer window
+
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_app_maximizes_whatsapp_after_opening(self, _open, _popen):
+        self.dispatcher.share_invoice_to_whatsapp("ACME", "9876543210", "1", "M", self.pdf, target="desktop")
+        self.maximize.assert_called_once()
+
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_web_does_not_touch_whatsapp_window(self, _open, _popen):
+        self.dispatcher.share_invoice_to_whatsapp("ACME", "9876543210", "1", "M", self.pdf, target="web")
+        self.maximize.assert_not_called()
 
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
     def test_app_without_phone_opens_contact_picker(self, mock_open, mock_popen):
@@ -240,6 +253,35 @@ class TestShareEntryPoint(unittest.TestCase):
         result = self.dispatcher.send_agency_invoice("ACME", "9876543210", "1", "M", self.pdf)
         self.assertEqual(len(result), 2)
         self.assertTrue(result[0])
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows only")
+class TestMaximizeWhatsApp(unittest.TestCase):
+    def _run(self, zoomed_states, windows=(111,)):
+        """zoomed_states: successive IsZoomed() answers."""
+        answers = iter(zoomed_states)
+        user32 = MagicMock()
+        user32.IsZoomed.side_effect = lambda h: next(answers, True)
+        clock = iter(range(0, 1000))
+        with patch.object(WhatsAppDispatcher, "_whatsapp_windows", return_value=list(windows)),                 patch("ctypes.windll.user32", user32, create=True),                 patch("whatsapp_dispatcher.time.sleep"),                 patch("whatsapp_dispatcher.time.time", side_effect=lambda: next(clock)):
+            WhatsAppDispatcher().maximize_whatsapp_soon(timeout=30).join(5)
+        return user32
+
+    def test_maximizes_restored_window(self):
+        user32 = self._run([False, True, True, True, True, True])
+        user32.ShowWindow.assert_called_once_with(111, 3)
+
+    def test_re_maximizes_if_whatsapp_shrinks_again(self):
+        user32 = self._run([False, True, False, True, True, True, True, True])
+        self.assertEqual(user32.ShowWindow.call_count, 2)
+
+    def test_leaves_maximized_window_alone(self):
+        user32 = self._run([True] * 10)
+        user32.ShowWindow.assert_not_called()
+
+    def test_no_whatsapp_window_gives_up_quietly(self):
+        user32 = self._run([], windows=())
+        user32.ShowWindow.assert_not_called()
 
 
 class TestPlaywrightSharePreview(unittest.TestCase):

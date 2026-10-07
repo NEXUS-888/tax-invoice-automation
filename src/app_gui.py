@@ -2021,10 +2021,11 @@ class InvoiceAutomationApp(QMainWindow):
             menu.addSeparator()
 
         act_picker_app = menu.addAction("📱 Open WhatsApp App (Select Contact)...")
-        act_picker_app.setToolTip("Copies the PDF and opens WhatsApp with the message: pick the contact, press Ctrl+V in the chat, then Send")
+        act_picker_app.setToolTip("Pick a saved contact or type any number; WhatsApp opens that chat with the message "
+                                  "and the PDF copied — press Ctrl+V in the chat, then Send")
         act_picker_app.triggered.connect(
-            lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx:
-            self.execute_direct_share(agency_name, None, i_no, m_desc, p_path, r_i, target="desktop")
+            lambda _, i_no=inv_no, m_desc=month_desc, p_path=pdf_path, r_i=row_idx, s_n=s_name:
+            self.select_contact_and_share(agency_name, s_n, i_no, m_desc, p_path, r_i)
         )
 
         act_picker_web = menu.addAction("🌐 Open WhatsApp Web (Select Contact)...")
@@ -2098,6 +2099,39 @@ class InvoiceAutomationApp(QMainWindow):
         else:
             self._set_share_status(row_idx, "❌ Could not open WhatsApp", "#ef4444")
             self._show_share_hint(msg)
+
+    def contact_choices(self, sheet_name=""):
+        """'Agency — number' entries for every saved WhatsApp number, this agency's first."""
+        own, others = [], []
+        for key, info in self.contacts_mgr.contacts.items():
+            name = (info.get('agency_name') or key).strip()
+            for phone in self.contacts_mgr.get_phones(key):
+                (own if sheet_name and str(key).strip().lower() == sheet_name.strip().lower() else others).append(
+                    f"{name} — {phone}")
+        return own + sorted(others, key=str.lower)
+
+    def select_contact_and_share(self, agency_name, sheet_name, inv_no, month_desc, pdf_path, row_idx=None):
+        """
+        Lets the user pick any saved contact or type a number, then opens that chat directly.
+        WhatsApp's own "Send to" picker is not used: it sends the text by itself and re-appears after
+        sending, which duplicated the message.
+        """
+        choices = self.contact_choices(sheet_name)
+        prompt = (f"Send the invoice for {agency_name} to:\n"
+                  f"pick a saved contact, or type any WhatsApp number (e.g. 98765 43210)")
+        current = 0
+        while True:
+            text, ok = QInputDialog.getItem(self, "Select Contact", prompt, choices or [""], current, True)
+            if not ok or not text.strip():
+                return
+            phone = normalize_phone(text.rsplit("—", 1)[-1])
+            if phone:
+                break
+            QMessageBox.warning(self, "Invalid Number",
+                                f"'{text}' is not a valid WhatsApp number. Enter a 10-digit mobile number.")
+            choices = [text] + [c for c in choices if c != text]
+            current = 0
+        self.execute_direct_share(agency_name, phone, inv_no, month_desc, pdf_path, row_idx, target="desktop")
 
     def prompt_number_and_share(self, agency_name, sheet_name, inv_no, month_desc, pdf_path, row_idx=None):
         """Asks for a missing WhatsApp number, saves it to contacts, then shares straight into that chat."""

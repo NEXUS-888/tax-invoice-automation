@@ -187,6 +187,70 @@ class WhatsAppDispatcher:
                     f"press Ctrl+V in the chat or drag it in.")
         return f"{prefix}{name} is highlighted in Explorer — drag it into the chat."
 
+    # ── WhatsApp Desktop window ──────────────────────────────────
+
+    @staticmethod
+    def _whatsapp_windows():
+        """Visible top-level windows of the WhatsApp Desktop process (matched by executable, not title)."""
+        if sys.platform != "win32":
+            return []
+        import ctypes
+        from ctypes import wintypes
+        user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+        found = []
+
+        def enum_cb(hwnd, _):
+            if user32.IsWindowVisible(hwnd) and not user32.GetWindow(hwnd, 4):  # GW_OWNER
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                handle = kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+                if handle:
+                    try:
+                        buf = ctypes.create_unicode_buffer(1024)
+                        size = wintypes.DWORD(len(buf))
+                        if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)) and \
+                                os.path.basename(buf.value).lower().startswith("whatsapp"):
+                            found.append(hwnd)
+                    finally:
+                        kernel32.CloseHandle(handle)
+            return True
+
+        try:
+            user32.EnumWindows(ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(enum_cb), 0)
+        except Exception:
+            return []
+        return found
+
+    def maximize_whatsapp_soon(self, timeout=10.0):
+        """
+        WhatsApp restores itself to a small window when a link opens it; maximize it once it is up.
+        Runs on a daemon thread and re-checks for a few seconds in case WhatsApp resizes again.
+        """
+        if sys.platform != "win32":
+            return None
+
+        def worker():
+            import ctypes
+            user32 = ctypes.windll.user32
+            deadline = time.time() + timeout
+            settled_since = None  # WhatsApp has stayed maximized since then
+            while time.time() < deadline:
+                windows = self._whatsapp_windows()
+                restored = [hwnd for hwnd in windows if not user32.IsZoomed(hwnd)]
+                for hwnd in restored:
+                    user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+                if windows and not restored:
+                    settled_since = settled_since or time.time()
+                    if time.time() - settled_since >= 3:
+                        return
+                else:
+                    settled_since = None
+                time.sleep(0.5)
+
+        t = threading.Thread(target=worker, daemon=True, name="wa-maximize")
+        t.start()
+        return t
+
     # ── Entry point ──────────────────────────────────────────────
 
     def _open_url(self, url):
@@ -227,7 +291,9 @@ class WhatsAppDispatcher:
         opened = False
         if target_mode in ("app", "desktop"):
             opened = self._open_url(self.build_share_url("app", clean_phone, message))
-            if not opened:
+            if opened:
+                self.maximize_whatsapp_soon()
+            else:
                 target_mode = "web"  # WhatsApp Desktop not installed -> WhatsApp Web in the browser
         if not opened:
             opened = self._open_url(self.build_share_url(target_mode, clean_phone, message))

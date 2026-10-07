@@ -62,6 +62,42 @@ class TestGUIIntegration(unittest.TestCase):
             self.gui.prompt_number_and_share("ACME", "ACME_SHEET", "1", "M", "x.pdf", 0)
         mock_share.assert_not_called()
 
+    def test_contact_choices_list_this_agency_first(self):
+        self.gui.contacts_mgr = MagicMock()
+        self.gui.contacts_mgr.contacts = {"ZED": {"agency_name": "ZED GAS"}, "ACME": {"agency_name": "ACME FUELS"},
+                                          "NONE": {"agency_name": "NO PHONE"}}
+        self.gui.contacts_mgr.get_phones.side_effect = lambda k: {"ZED": ["919000000001"],
+                                                                  "ACME": ["919876543210"]}.get(k, [])
+        self.assertEqual(self.gui.contact_choices("ACME"),
+                         ["ACME FUELS — 919876543210", "ZED GAS — 919000000001"])
+
+    @patch("app_gui.QInputDialog.getItem", return_value=("ZED GAS — 919000000001", True))
+    def test_select_contact_opens_that_chat_directly(self, _ask):
+        with patch.object(self.gui, "contact_choices", return_value=["ZED GAS — 919000000001"]),                 patch.object(self.gui, "execute_direct_share") as share:
+            self.gui.select_contact_and_share("ACME", "ACME", "1", "M", "x.pdf", 0)
+        share.assert_called_once_with("ACME", "919000000001", "1", "M", "x.pdf", 0, target="desktop")
+
+    @patch("app_gui.QInputDialog.getItem", return_value=("098765 43210", True))
+    def test_select_contact_accepts_typed_number(self, _ask):
+        with patch.object(self.gui, "execute_direct_share") as share:
+            self.gui.select_contact_and_share("ACME", "ACME", "1", "M", "x.pdf", 0)
+        self.assertEqual(share.call_args[0][1], "919876543210")
+
+    @patch("app_gui.QMessageBox.warning")
+    @patch("app_gui.QInputDialog.getItem", side_effect=[("12345", True), ("9876543210", True)])
+    def test_select_contact_reasks_on_invalid_number(self, ask, warn):
+        with patch.object(self.gui, "execute_direct_share") as share:
+            self.gui.select_contact_and_share("ACME", "ACME", "1", "M", "x.pdf", 0)
+        warn.assert_called_once()
+        self.assertEqual(ask.call_count, 2)
+        self.assertEqual(share.call_args[0][1], "919876543210")
+
+    @patch("app_gui.QInputDialog.getItem", return_value=("", False))
+    def test_select_contact_cancel_shares_nothing(self, _ask):
+        with patch.object(self.gui, "execute_direct_share") as share:
+            self.gui.select_contact_and_share("ACME", "ACME", "1", "M", "x.pdf", 0)
+        share.assert_not_called()
+
     def test_app_share_uses_desktop_even_when_web_session_connected(self):
         self._one_row_table()
         self.gui.whatsapp_connected = True
