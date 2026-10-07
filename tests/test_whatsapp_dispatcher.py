@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
+import whatsapp_dispatcher
 from whatsapp_dispatcher import WhatsAppDispatcher
 from whatsapp_automator import WhatsAppAutomator, build_invoice_message
 
@@ -163,6 +164,11 @@ class TestShareEntryPoint(unittest.TestCase):
         m = patch.object(WhatsAppDispatcher, "maximize_whatsapp_soon")  # never touch the real window
         self.maximize = m.start()
         self.addCleanup(m.stop)
+        w = patch.object(WhatsAppDispatcher, "_whatsapp_windows", return_value=[4242])  # WhatsApp running
+        self.windows = w.start()
+        self.addCleanup(w.stop)
+        whatsapp_dispatcher._recent_shares.clear()
+        self.addCleanup(whatsapp_dispatcher._recent_shares.clear)
 
     def tearDown(self):
         os.remove(self.pdf)
@@ -181,9 +187,55 @@ class TestShareEntryPoint(unittest.TestCase):
         mock_popen.assert_not_called()  # no Explorer window
 
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_second_click_within_guard_time_is_ignored(self, mock_open, _popen):
+        """A second click while WhatsApp is still opening would open a second picker (duplicate text)."""
+        self.dispatcher.share_invoice_to_whatsapp("ACME", None, "105", "M", self.pdf, target="desktop")
+        ok, msg = self.dispatcher.share_invoice_to_whatsapp("ACME", None, "105", "M", self.pdf, target="desktop")
+        self.assertTrue(ok)
+        self.assertIn("already opening", msg)
+        self.assertEqual(mock_open.call_count, 1)
+
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_different_invoice_is_not_blocked(self, mock_open, _popen):
+        self.dispatcher.share_invoice_to_whatsapp("ACME", None, "105", "M", self.pdf, target="desktop")
+        self.dispatcher.share_invoice_to_whatsapp("ZED", None, "106", "M", self.pdf, target="desktop")
+        self.assertEqual(mock_open.call_count, 2)
+
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_same_invoice_allowed_again_after_guard_time(self, mock_open, _popen):
+        with patch("whatsapp_dispatcher.time.time", side_effect=[1000.0, 1000.0 + 16]):
+            self.dispatcher.share_invoice_to_whatsapp("ACME", None, "105", "M", self.pdf, target="desktop")
+            self.dispatcher.share_invoice_to_whatsapp("ACME", None, "105", "M", self.pdf, target="desktop")
+        self.assertEqual(mock_open.call_count, 2)
+
+    @patch.object(WhatsAppDispatcher, "whatsapp_store_app_installed", return_value=True)
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_cold_start_starts_whatsapp_first_then_sends_link_once(self, mock_open, _installed, _popen):
+        """A link sent while WhatsApp is starting is dropped, so start it, wait for its window, then link."""
+        self.windows.side_effect = [[], [], [4242]]  # not running; window appears on the 2nd check
+        with patch("whatsapp_dispatcher.time.sleep"),                 patch("whatsapp_dispatcher.threading.Thread") as thread:
+            ok, msg = self.dispatcher.share_invoice_to_whatsapp(
+                "ACME", None, "105", "M", self.pdf, target="desktop")
+            self.assertTrue(ok)
+            self.assertIn("Starting WhatsApp Desktop", msg)
+            self.assertEqual(mock_open.call_args_list[0][0][0], "shell:AppsFolder\\" + whatsapp_dispatcher.WHATSAPP_AUMID)
+            self.assertEqual(mock_open.call_count, 1)  # the link itself waits for the worker
+            thread.call_args.kwargs["target"]()        # run the worker inline
+        self.assertEqual(mock_open.call_count, 2)
+        self.assertTrue(mock_open.call_args_list[1][0][0].startswith("whatsapp://send?text="))
+        self.maximize.assert_called_once_with(bring_to_front=True)
+
+    @patch.object(WhatsAppDispatcher, "whatsapp_store_app_installed", return_value=False)
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
+    def test_non_store_whatsapp_gets_the_link_directly(self, mock_open, _installed, _popen):
+        self.windows.return_value = []
+        self.dispatcher.share_invoice_to_whatsapp("ACME", None, "105", "M", self.pdf, target="desktop")
+        self.assertTrue(mock_open.call_args[0][0].startswith("whatsapp://send?text="))
+
+    @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
     def test_app_maximizes_whatsapp_after_opening(self, _open, _popen):
         self.dispatcher.share_invoice_to_whatsapp("ACME", "9876543210", "1", "M", self.pdf, target="desktop")
-        self.maximize.assert_called_once()
+        self.maximize.assert_called_once_with(bring_to_front=True)
 
     @patch.object(WhatsAppDispatcher, "_open_url", return_value=True)
     def test_web_does_not_touch_whatsapp_window(self, _open, _popen):
@@ -257,18 +309,19 @@ class TestShareEntryPoint(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "win32", "Windows only")
 class TestMaximizeWhatsApp(unittest.TestCase):
-    def _run(self, zoomed, iconic=lambda i: False, windows=(111,), timeout=30):
+    def _run(self, zoomed, iconic=lambda i: False, windows=(111,), timeout=30, bring_to_front=False, foreground=0):
         """zoomed(i)/iconic(i): window state on the i-th check (one check per 0.5 s loop)."""
         calls = {"n": 0}
         user32 = MagicMock()
         user32.IsZoomed.side_effect = lambda h: zoomed(calls["n"])
         user32.IsIconic.side_effect = lambda h: iconic(calls["n"])
+        user32.GetForegroundWindow.return_value = foreground
 
         def sleep(_):
             calls["n"] += 1
         clock = iter(range(0, 10000))
         with patch.object(WhatsAppDispatcher, "_whatsapp_windows", return_value=list(windows)),                 patch("ctypes.windll.user32", user32, create=True),                 patch("whatsapp_dispatcher.time.sleep", side_effect=sleep),                 patch("whatsapp_dispatcher.time.time", side_effect=lambda: next(clock)):
-            WhatsAppDispatcher().maximize_whatsapp_soon(timeout=timeout).join(5)
+            WhatsAppDispatcher().maximize_whatsapp_soon(timeout=timeout, bring_to_front=bring_to_front).join(5)
         return user32
 
     def test_maximizes_restored_window(self):
@@ -279,6 +332,14 @@ class TestMaximizeWhatsApp(unittest.TestCase):
         """WhatsApp shrinking 20 s after opening (slow laptop) is still caught."""
         user32 = self._run(lambda i: not (i == 0 or i == 20))
         self.assertEqual(user32.ShowWindow.call_count, 2)
+
+    def test_brings_whatsapp_to_front_once(self):
+        user32 = self._run(lambda i: True, bring_to_front=True, foreground=999)
+        user32.SetForegroundWindow.assert_called_once_with(111)
+
+    def test_does_not_steal_focus_unless_asked(self):
+        user32 = self._run(lambda i: True, foreground=999)
+        user32.SetForegroundWindow.assert_not_called()
 
     def test_leaves_maximized_window_alone(self):
         user32 = self._run(lambda i: True)

@@ -18,6 +18,19 @@ from whatsapp_automator import build_invoice_message
 from contacts_manager import normalize_phone
 
 
+# Store app id of WhatsApp for Windows (the publisher hash is fixed for the Store package).
+WHATSAPP_AUMID = "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"
+# A link sent while WhatsApp is still starting is dropped (no picker/chat appears), so after a cold
+# start we wait this long after its window shows up before sending the link.
+COLD_START_SETTLE_SECONDS = 6.0
+# Clicking Share again for the same invoice within this time is ignored (the first link is still
+# being handled; a second one would open a second picker/chat with the text again).
+REPEAT_GUARD_SECONDS = 15.0
+
+_recent_shares = {}
+_recent_shares_lock = threading.Lock()
+
+
 
 class WhatsAppDispatcher:
     """
@@ -221,7 +234,7 @@ class WhatsAppDispatcher:
             return []
         return found
 
-    def maximize_whatsapp_soon(self, timeout=45.0):
+    def maximize_whatsapp_soon(self, timeout=45.0, bring_to_front=False):
         """
         WhatsApp restores itself to a small window when a link opens it - sometimes only once the chat
         has loaded, which on a slow laptop can be many seconds later. A daemon thread keeps WhatsApp
@@ -234,10 +247,18 @@ class WhatsAppDispatcher:
             import ctypes
             user32 = ctypes.windll.user32
             deadline = time.time() + timeout
+            brought_to_front = not bring_to_front
             while time.time() < deadline:
                 for hwnd in self._whatsapp_windows():
                     if not user32.IsZoomed(hwnd) and not user32.IsIconic(hwnd):
                         user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+                    if not brought_to_front:
+                        # WhatsApp can open behind other windows, which looks like "nothing happened".
+                        brought_to_front = True
+                        if user32.GetForegroundWindow() != hwnd:
+                            user32.keybd_event(0x12, 0, 0, 0)  # an Alt tap lifts Windows' foreground lock
+                            user32.keybd_event(0x12, 0, 2, 0)
+                            user32.SetForegroundWindow(hwnd)
                 time.sleep(0.5)
 
         t = threading.Thread(target=worker, daemon=True, name="wa-maximize")
@@ -245,6 +266,52 @@ class WhatsAppDispatcher:
         return t
 
     # ── Entry point ──────────────────────────────────────────────
+
+    @staticmethod
+    def whatsapp_store_app_installed():
+        local = os.environ.get("LOCALAPPDATA", "")
+        return bool(local) and os.path.isdir(os.path.join(local, "Packages", WHATSAPP_AUMID.split("!")[0]))
+
+    def open_in_whatsapp_desktop(self, url, start_timeout=30.0):
+        """
+        Opens a whatsapp:// link exactly once, in a way that is not lost:
+          WhatsApp running     -> open the link now;
+          WhatsApp not running -> start it, wait until its window is up and settled, then open the link
+                                  (on a daemon thread; a link sent during start-up is dropped).
+        Returns (opened, cold_start).
+        """
+        if self._whatsapp_windows() or not self.whatsapp_store_app_installed():
+            opened = self._open_url(url)
+            if opened:
+                self.maximize_whatsapp_soon(bring_to_front=True)
+            return opened, False
+        if not self._open_url("shell:AppsFolder\\" + WHATSAPP_AUMID):
+            opened = self._open_url(url)
+            if opened:
+                self.maximize_whatsapp_soon(bring_to_front=True)
+            return opened, False
+
+        def worker():
+            deadline = time.time() + start_timeout
+            while not self._whatsapp_windows() and time.time() < deadline:
+                time.sleep(0.3)
+            time.sleep(COLD_START_SETTLE_SECONDS)
+            if self._open_url(url):
+                self.maximize_whatsapp_soon(bring_to_front=True)
+
+        threading.Thread(target=worker, daemon=True, name="wa-cold-start").start()
+        return True, True
+
+    @staticmethod
+    def _is_repeat(key):
+        """True if the same share was started less than REPEAT_GUARD_SECONDS ago (records it otherwise)."""
+        now = time.time()
+        with _recent_shares_lock:
+            last = _recent_shares.get(key)
+            if last is not None and now - last < REPEAT_GUARD_SECONDS:
+                return True
+            _recent_shares[key] = now
+            return False
 
     def _open_url(self, url):
         if hasattr(os, 'startfile'):
@@ -280,13 +347,15 @@ class WhatsAppDispatcher:
         target_mode = (target or self.mode or "app").lower()
         target_desc = f"{agency_name} ({clean_phone})" if clean_phone else agency_name
 
+        if self._is_repeat((agency_name, str(invoice_no), clean_phone, target_mode)):
+            return True, (f"WhatsApp is already opening for {target_desc} — wait a moment; "
+                          f"clicking again would open it twice.")
+
         copied = has_pdf and self.copy_pdf_to_clipboard(abs_pdf)
-        opened = False
+        opened = cold_start = False
         if target_mode in ("app", "desktop"):
-            opened = self._open_url(self.build_share_url("app", clean_phone, message))
-            if opened:
-                self.maximize_whatsapp_soon()
-            else:
+            opened, cold_start = self.open_in_whatsapp_desktop(self.build_share_url("app", clean_phone, message))
+            if not opened:
                 target_mode = "web"  # WhatsApp Desktop not installed -> WhatsApp Web in the browser
         if not opened:
             opened = self._open_url(self.build_share_url(target_mode, clean_phone, message))
@@ -300,8 +369,9 @@ class WhatsAppDispatcher:
         if not copied:
             return True, f"Opened {dest_label} for {target_desc}. {self.run_fallback(abs_pdf, reason='Could not copy the PDF.')}"
         where = "in the chat" if clean_phone else "in the chat after picking the contact"
-        return True, (f"Opened {dest_label} for {target_desc}. The PDF is copied — press Ctrl+V {where} "
-                      f"to attach it, then Send.")
+        opening = (f"Starting {dest_label} for {target_desc} (a few seconds)." if cold_start
+                   else f"Opened {dest_label} for {target_desc}.")
+        return True, f"{opening} The PDF is copied — press Ctrl+V {where} to attach it, then Send."
 
     # Backwards compatibility alias
     def send_agency_invoice(self, agency_name, phone, invoice_no, month_desc, pdf_path):
